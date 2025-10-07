@@ -1,0 +1,323 @@
+const express = require("express");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const twilio = require("twilio");
+const User = require("../model/user");
+const Message = require("../model/message"); 
+
+
+let pendingUsers = {}; 
+
+
+const router = express.Router();
+
+const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+
+// helper: generate token
+const generateToken = (user) => {
+  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+};
+
+// middleware: protect route
+const authMiddleware = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) return res.status(401).json({ success: false, message: "No token provided" });
+
+  const token = authHeader.split(" ")[1];
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+    if (err) return res.status(401).json({ success: false, message: "Invalid token" });
+    req.userId = decoded.id;
+    next();
+  });
+};
+
+// 🔹 Signup → create user in DB with OTP
+router.post("/signup", async (req, res) => {
+  try {
+    const { name, PhoneNumber, password } = req.body;
+
+    if (!name || !PhoneNumber || !password) {
+      return res.status(400).json({ success: false, message: "All fields are required" });
+    }
+
+    const existing = await User.findOne({ PhoneNumber });
+    if (existing) return res.status(400).json({ success: false, message: "Phone already registered" });
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const newUser = new User({
+      name,
+      PhoneNumber,
+      password: hashedPassword,
+      otp,
+      otpExpires: Date.now() + 5 * 60 * 1000, // 5 mins
+      isVerified: false
+    });
+    await newUser.save();
+
+    console.log(` OTP for ${PhoneNumber}: ${otp}`); // Dev mode log
+
+    res.json({
+      success: true,
+      message: "OTP sent, verify with userId + otp",
+      userId: newUser._id
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔹 Verify → use userId + otp
+router.post("/verify", async (req, res) => {
+  try {
+    const { userId, otp } = req.body;
+
+    if (!userId || !otp) {
+      return res.status(400).json({ success: false, message: "userId and otp are required" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (user.isVerified) return res.json({ success: false, message: "Already verified" });
+
+    if (String(user.otp).trim() !== String(otp).trim()) {
+      return res.status(400).json({ success: false, message: "Invalid OTP" });
+    }
+
+    if (user.otpExpires < Date.now()) {
+      return res.status(400).json({ success: false, message: "OTP expired" });
+    }
+
+    user.isVerified = true;
+    user.otp = null;
+    user.otpExpires = null;
+    await user.save();
+
+    res.json({ success: true, message: "Account verified, you can login now" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔹 Resend OTP (new feature)
+router.post("/resend-otp", async (req, res) => {
+  try {
+    const { PhoneNumber } = req.body;
+    const user = await User.findOne({ PhoneNumber });
+
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    if (user.isVerified) return res.status(400).json({ success: false, message: "Account already verified" });
+
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000;
+    await user.save();
+
+    console.log(`Resent OTP for ${PhoneNumber}: ${otp}`);
+
+    res.json({ success: true, message: "New OTP sent" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔹 Login
+router.post("/login", async (req, res) => {
+  try {
+    const { PhoneNumber, password } = req.body;
+    if (!PhoneNumber || !password) {
+      return res.status(400).json({ success: false, message: "Phone number and password required" });
+    }
+
+    const user = await User.findOne({ PhoneNumber });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    if (!user.isVerified) return res.status(403).json({ success: false, message: "Account not verified" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials" });
+
+    const token = generateToken(user);
+    res.json({ success: true, token, userId: user._id });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔹 Change Password
+router.post("/change-password", authMiddleware, async (req, res) => {
+  try {
+    const { oldPassword, newPassword } = req.body;
+    const user = await User.findById(req.userId);
+
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch) return res.status(400).json({ success: false, message: "Old password is incorrect" });
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    res.json({ success: true, message: "Password changed successfully" });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 🔹 Logout (frontend will just delete token, but API for consistency)
+router.post("/logout", authMiddleware, (req, res) => {
+  res.json({ success: true, message: "Logged out successfully" });
+});
+
+//users with contacts
+router.get("/users", async (req, res) => {
+  try {
+    const users = await User.find({}, "name PhoneNumber online"); 
+    
+
+    res.json({ success: true, users });
+  } catch (err) {
+    console.error("Error fetching users:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+router.get("/profile", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.userId).select("name PhoneNumber");
+    
+    if (!user) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "User not found or token invalid" 
+      });
+    }
+
+    res.json({ 
+      success: true, 
+      user,
+      requestedAt: new Date().toISOString() // optional: adds timestamp
+    });
+  } catch (err) {
+    console.error("Profile Error:", err); // better debugging
+    res.status(500).json({ 
+      success: false, 
+      message: "Something went wrong, please try again" 
+    });
+  }
+});
+
+
+///delete meassage
+router.delete("/messages/:id", authMiddleware, async (req, res) => {
+  try {
+    const messageId = req.params.id;
+
+    //  Get logged-in user’s phone number
+    const user = await User.findById(req.userId).select("PhoneNumber");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    // Find message
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ success: false, message: "Message not found" });
+    }
+
+    // Ensure user is sender or receiver
+    if (message.from !== user.PhoneNumber && message.to !== user.PhoneNumber) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    
+    await Message.findByIdAndDelete(messageId);
+    return res.json({ success: true, message: "Message deleted successfully" });
+
+  } catch (err) {
+    console.error("Error deleting message:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+// 🔹 Get conversations (like WhatsApp chat list)
+router.get("/conversations/:phone", async (req, res) => {
+  try {
+    const phone = req.params.phone;
+    if (!phone) return res.status(400).json({ success: false, message: "phone required" });
+
+    const conversations = await Message.aggregate([
+      { $match: { $or: [{ from: phone }, { to: phone }] } },
+      {
+        $addFields: {
+          other: { $cond: [{ $eq: ["$from", phone] }, "$to", "$from"] }
+        }
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$other",
+          lastMessage: { $first: "$text" },
+          lastAt: { $first: "$createdAt" },
+          lastFrom: { $first: "$from" },
+          unreadCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $eq: ["$to", phone] }, { $ne: ["$read", true] }] },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "PhoneNumber",
+          as: "user"
+        }
+      },
+      {
+        $addFields: {
+          name: { $arrayElemAt: ["$user.name", 0] },
+          online: { $arrayElemAt: ["$user.online", 0] }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          phone: "$_id",
+          name: 1,
+          online: 1,
+          lastMessage: 1,
+          lastAt: 1,
+          lastFrom: 1,
+          unreadCount: 1
+        }
+      },
+      { $sort: { lastAt: -1 } }
+    ]);
+
+    res.json({ success: true, conversations });
+  } catch (err) {
+    console.error("Error fetching conversations:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+
+
+
+module.exports = router;
