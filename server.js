@@ -24,6 +24,8 @@ if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
 app.use("/uploads", express.static(uploadDir));
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+app.use("/messages", require("./routes/userRouter"));
+app.use("/messages", userRouter); 
 
 
 // Routes

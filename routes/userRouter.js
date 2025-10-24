@@ -161,7 +161,7 @@ router.get("/users", async (req, res) => {
 
 router.get("/profile", authMiddleware, async (req, res) => {
   try {
-	const user = await User.findById(req.userId).select("name PhoneNumber, profilePic online");
+	const user = await User.findById(req.userId).select("name PhoneNumber profilePic online");
 	if (!user) {
 	  return res.status(404).json({ success: false, message: "User not found or token invalid" });
 	}
@@ -302,11 +302,61 @@ router.post("/messages/mark-read", async (req, res) => {
 });
 
 
-//// send files
-router.post("/send-file", upload.single("file"), async (req, res) => {
+const uploadDir = path.join(__dirname, "../uploads");
+
+// Ensure uploads folder exists
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Create new multer storage (do NOT redeclare upload twice)
+const fileStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const uniqueName = `file-${Date.now()}-${Math.round(Math.random() * 1e9)}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  },
+});
+
+const allowedMimeTypes = [
+  "image/jpeg",
+  "image/png",
+  "image/jpg",
+  "image/gif",
+  "image/webp",
+  "video/mp4",
+  "video/quicktime",
+  "application/pdf",
+  "text/plain",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+];
+
+const uploadFile = multer({
+  storage: fileStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  fileFilter: (req, file, cb) => {
+    if (allowedMimeTypes.includes(file.mimetype)) cb(null, true);
+    else cb(new Error("Unsupported file type"));
+  },
+});
+
+// Send File route
+router.post("/send-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   try {
     const { from, to, text } = req.body;
-    const fileUrl = `http://${req.headers.host}/uploads/messages/${req.file.filename}`;
+
+    if (!from || !to)
+      return res.status(400).json({ success: false, message: "Sender and receiver required" });
+
+    if (!req.file)
+      return res.status(400).json({ success: false, message: "File is required" });
+
+    const fileUrl = `${req.protocol}://${req.headers.host}/uploads/${path.basename(req.file.path)}`;
 
     const newMessage = new Message({
       from,
@@ -317,12 +367,20 @@ router.post("/send-file", upload.single("file"), async (req, res) => {
     });
 
     await newMessage.save();
+
     res.json({ success: true, message: newMessage });
   } catch (err) {
     console.error("send-file error:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: err.message || "Server error while uploading file",
+    });
   }
 });
+
+// ✅ Serve uploaded files publicly
+router.use("/uploads", express.static(uploadDir));
+
 
 
 module.exports = router;
