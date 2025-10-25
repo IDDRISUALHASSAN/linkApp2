@@ -334,6 +334,21 @@ const allowedMimeTypes = [
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.ms-powerpoint",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+  "application/x-rar-compressed",
+  "application/x-7z-compressed",		
+  "audio/mpeg",
+  "audio/wav",
+  "audio/ogg",
+  "audio/flac",
+  "audio/aac",
+  "audio/mp3",
+  "video/mp4",
+  "video/mpeg",
+  "video/3gpp",
+  "video/3gpp2",
+  "video/quicktime",
+  "video/x-msvideo",
 ];
 
 const uploadFile = multer({
@@ -378,7 +393,44 @@ router.post("/send-file", authMiddleware, uploadFile.single("file"), async (req,
   }
 });
 
-// ✅ Serve uploaded files publicly
+/// route that get there recived name,picture by phone number
+router.get("/user-info/:PhoneNumber", async (req, res) => {
+  try {
+    const { PhoneNumber } = req.params;
+
+    if (!PhoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    // Only select what you need — name, profilePic, PhoneNumber
+    const user = await User.findOne({ PhoneNumber }).select("name profilePic PhoneNumber");
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      user,
+    });
+  } catch (error) {
+    console.error("Get user info error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+      error: error.message,
+    });
+  }
+});
+
+
+//  Serve uploaded files publicly
 router.use("/uploads", express.static(uploadDir));
 
 
