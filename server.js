@@ -30,7 +30,7 @@ const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 app.use("/uploads", express.static(uploadDir));
 
-// ✅ Mount your routes only once
+// Mount your routes
 app.use("/", userRouter);
 
 // Create HTTP + WebSocket server
