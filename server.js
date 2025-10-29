@@ -31,6 +31,7 @@ app.use("/messages", userRouter);
 // Routes
 app.use("/", userRouter);
 
+
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -124,7 +125,12 @@ mongoose
   })
   .then(() => {
     console.log(" Connected to MongoDB");
+    app.get("/", (req, res) => {
+  res.send(" LinkApp backend is live and running on Render!");
+});
+    
     server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
+      
       console.log(" Server running on port", process.env.PORT || 3000);
     });
   })
