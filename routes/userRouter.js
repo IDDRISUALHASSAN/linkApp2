@@ -32,12 +32,33 @@ const authMiddleware = (req, res, next) => {
 // 🔹 Signup → create user in DB with OTP
 router.post("/signup", async (req, res) => {
   try {
-	const { name, PhoneNumber, password } = req.body;
-	if (!name || !PhoneNumber || !password) {
-	  return res.status(400).json({ success: false, message: "All fields are required" });
-	}
-	const existing = await User.findOne({ PhoneNumber });
-	if (existing) return res.status(400).json({ success: false, message: "Phone already registered" });
+  const { name, PhoneNumber, password } = req.body;
+
+  if (!name || !PhoneNumber || !password) {
+    return res.status(400).json({
+      success: false,
+      message: "All fields are required",
+    });
+  }
+
+  const existing = await User.findOne({ PhoneNumber });
+
+  if (existing) {
+    if (existing.verified) {
+      // If the number is already verified, stop signup
+      return res.status(400).json({
+        success: false,
+        message: "Phone already registered",
+      });
+    } else {
+      // Number exists but not verified yet — tell user to verify OTP
+      return res.status(200).json({
+        success: false,
+        message: "Phone exists but not verified. Please verify your OTP to continue.",
+        pendingVerification: true,
+      });
+    }
+  }
 
 	const hashedPassword = await bcrypt.hash(password, 10);
 	const otp = Math.floor(100000 + Math.random() * 900000).toString();
@@ -52,14 +73,22 @@ router.post("/signup", async (req, res) => {
 	});
 
 	await newUser.save();
-	console.log(`OTP for ${PhoneNumber}: ${otp}`); // Dev mode log
+try {
+  await client.messages.create({
+    from: "whatsapp:+14155238886",
+    to: `whatsapp:${PhoneNumber}`,
+    body: `Your verification code is ${otp}. It expires in 5 minutes.`,
+  });
+  console.log(`✅ WhatsApp OTP sent to ${PhoneNumber}`);
+} catch (twilioErr) {
+  console.error("❌ Twilio WhatsApp Error:", twilioErr.message);
+}
 	res.json({ success: true, message: "OTP sent, verify with userId + otp", userId: newUser._id });
   } catch (err) {
 	res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// 🔹 Verify → use userId + otp
 router.post("/verify", async (req, res) => {
   try {
 	const { userId, otp } = req.body;
@@ -97,7 +126,16 @@ router.post("/resend-otp", async (req, res) => {
 	user.otp = otp;
 	user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 mins
 	await user.save();
-	console.log(`Resent OTP for ${PhoneNumber}: ${otp}`);
+try {
+  await client.messages.create({
+    from: "whatsapp:+14155238886",
+    to: `whatsapp:${PhoneNumber}`,
+    body: `Your verification code is ${otp}. It expires in 5 minutes.`,
+  });
+  console.log(`✅ WhatsApp OTP sent to ${PhoneNumber}`);
+} catch (twilioErr) {
+  console.error("❌ Twilio WhatsApp Error:", twilioErr.message);
+}
 	res.json({ success: true, message: "New OTP sent" });
   } catch (err) {
 	res.status(500).json({ success: false, message: err.message });
