@@ -472,5 +472,7 @@ router.get("/user-info/:PhoneNumber", async (req, res) => {
 router.use("/uploads", express.static(uploadDir));
 
 
-
+router.get("/", (req, res) => {
+  res.send("✅ LinkApp backend is live and ready!");
+});
 module.exports = router;
