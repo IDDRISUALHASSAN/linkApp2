@@ -17,6 +17,9 @@ const User = require("./model/user");
 const app = express();
 app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
 app.use(bodyParser.json());
+app.get("/", (req, res) => {
+  res.send("✅ LinkApp backend is live and running on Render!");
+});
 
 // ensure uploads folder exists and serve it
 const uploadDir = path.join(__dirname, "uploads");
