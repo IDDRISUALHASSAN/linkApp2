@@ -15,25 +15,23 @@ const Message = require("./model/message");
 const User = require("./model/user");
 
 const app = express();
+
+// Middleware
 app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
 app.use(bodyParser.json());
+
+// ✅ Root route for testing on Render
 app.get("/", (req, res) => {
   res.send("✅ LinkApp backend is live and running on Render!");
 });
 
-// ensure uploads folder exists and serve it
+// Ensure uploads folder exists and serve it
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
 app.use("/uploads", express.static(uploadDir));
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-app.use("/messages", require("./routes/userRouter"));
-app.use("/messages", userRouter); 
 
-
-// Routes
+// ✅ Mount your routes only once
 app.use("/", userRouter);
-
 
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
@@ -41,6 +39,7 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
+// Online users map
 let onlineUsers = {};
 
 const setUserOnlineStatus = async (phoneNumber, status) => {
@@ -51,25 +50,23 @@ const setUserOnlineStatus = async (phoneNumber, status) => {
       { new: true }
     );
   } catch (err) {
-    console.error(" Error updating user status:", err);
+    console.error("Error updating user status:", err);
   }
 };
 
 io.on("connection", (socket) => {
-  console.log(" Socket connected:", socket.id);
+  console.log("Socket connected:", socket.id);
 
-  // User login event
   socket.on("login", async (phoneNumber) => {
     if (!phoneNumber) return;
     onlineUsers[phoneNumber] = socket.id;
-    console.log(` ${phoneNumber} logged in`);
+    console.log(`${phoneNumber} logged in`);
     await setUserOnlineStatus(phoneNumber, true);
     socket.broadcast.emit("userOnline", phoneNumber);
   });
 
-  // Send message
   socket.on("message", async ({ from, to, text }) => {
-    console.log(" Incoming message:", { from, to, text });
+    console.log("Incoming message:", { from, to, text });
     if (!from || !to || !text?.trim()) return;
 
     const msg = new Message({
@@ -89,26 +86,21 @@ io.on("connection", (socket) => {
     socket.emit("messageSent", msg);
   });
 
-  // Load chat history
   socket.on("loadHistory", async ({ from, to }) => {
     if (!from || !to) return;
     try {
       const history = await Message.find({
-        $or: [
-          { from, to },
-          { from: to, to: from },
-        ],
+        $or: [{ from, to }, { from: to, to: from }],
       }).sort({ createdAt: 1 });
-
       socket.emit("history", history);
     } catch (err) {
-      console.error(" Error loading history:", err);
+      console.error("Error loading history:", err);
       socket.emit("history", []);
     }
   });
 
   socket.on("disconnect", async () => {
-    console.log(" Socket disconnected:", socket.id);
+    console.log("Socket disconnected:", socket.id);
     const phone = Object.keys(onlineUsers).find(
       (key) => onlineUsers[key] === socket.id
     );
@@ -120,21 +112,16 @@ io.on("connection", (socket) => {
   });
 });
 
-// DB connection + Start server
+// Connect to DB and start server
 mongoose
   .connect(process.env.MONGO_url, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })
   .then(() => {
-    console.log(" Connected to MongoDB");
-    app.get("/", (req, res) => {
-  res.send(" LinkApp backend is live and running on Render!");
-});
-    
+    console.log("✅ Connected to MongoDB");
     server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
-      
-      console.log(" Server running on port", process.env.PORT || 3000);
+      console.log("🚀 Server running on port", process.env.PORT || 3000);
     });
   })
   .catch((err) => console.log("DB error:", err));
