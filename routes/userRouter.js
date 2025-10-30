@@ -54,11 +54,12 @@ router.post("/signup", async (req, res) => {
       });
     } else {
       // Number exists but not verified yet — tell user to verify OTP
-      return res.status(200).json({
-        success: false,
-        message: "Phone exists but not verified. Please verify your OTP to continue.",
-        pendingVerification: true,
-      });
+     return res.status(200).json({
+  success: true,
+  message: "Account exists but not verified. Proceed to OTP verification.",
+  userId: existing._id,
+  pendingVerification: true,
+});
     }
   }
 
