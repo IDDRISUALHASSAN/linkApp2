@@ -7,6 +7,8 @@ const Message = require("../model/message");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
+const cloudinary = require("./../cloudinary");
+
 
 let pendingUsers = {};
 const router = express.Router();
@@ -302,20 +304,32 @@ const upload = multer({ storage });
 
 router.post("/profilepic", authMiddleware, upload.single("picture"), async (req, res) => {
   try {
-	const user = await User.findById(req.userId);
-	if (!user) {
-	  return res.status(404).json({ success: false, message: "User not found" });
-	}
-	// save public image path
-	const imageUrl = `http://${req.headers.host}/uploads/${path.basename(req.file.path)}`;
-	user.profilePic = imageUrl;
-	await user.save();
-	res.json({ success: true, message: "Profile picture uploaded successfully", imageUrl });
+    const user = await User.findById(req.userId);
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+
+    // Upload image to Cloudinary
+    const result = await cloudinary.uploader.upload(req.file.path, {
+      folder: "user_uploads/profile_pics",
+    });
+
+    // Save image URL in MongoDB
+    user.profilePic = result.secure_url;
+    await user.save();
+
+    // Optional: Delete local file
+    fs.unlinkSync(req.file.path);
+
+    res.json({
+      success: true,
+      message: "Profile picture uploaded successfully",
+      imageUrl: result.secure_url,
+    });
   } catch (err) {
-	console.error("Error uploading profile picture:", err);
-	res.status(500).json({ success: false, message: "Server error" });
+    console.error("Error uploading profile picture:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 // 🔹 Mark messages as read
 router.post("/messages/mark-read", async (req, res) => {
@@ -398,8 +412,8 @@ const uploadFile = multer({
   },
 });
 
-// Send File route
-router.post("/send-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
+// 🔹 Send File (Uploads to Cloudinary)
+router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   try {
     const { from, to, text } = req.body;
 
@@ -409,19 +423,37 @@ router.post("/send-file", authMiddleware, uploadFile.single("file"), async (req,
     if (!req.file)
       return res.status(400).json({ success: false, message: "File is required" });
 
-    const fileUrl = `${req.protocol}://${req.headers.host}/uploads/${path.basename(req.file.path)}`;
+    // 🔸 Detect file type (image, video, audio, raw, etc.)
+    let resourceType = "auto";
+    if (req.file.mimetype.startsWith("image/")) resourceType = "image";
+    else if (req.file.mimetype.startsWith("video/")) resourceType = "video";
+    else if (req.file.mimetype.startsWith("audio/")) resourceType = "auto";
+    else resourceType = "raw"; // for pdf, docx, zip, etc.
 
+    // 🔸 Upload to Cloudinary
+    const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+      folder: "user_uploads/files",
+      resource_type: resourceType,
+    });
+
+    // 🔸 Delete local file after uploading
+    fs.unlinkSync(req.file.path);
+
+    // 🔸 Save message in MongoDB
     const newMessage = new Message({
       from,
       to,
       text: text || "",
-      fileUrl,
+      fileUrl: uploadResult.secure_url,
       fileType: req.file.mimetype,
     });
 
     await newMessage.save();
 
-    res.json({ success: true, message: newMessage });
+    res.json({
+      success: true,
+      message: newMessage,
+    });
   } catch (err) {
     console.error("send-file error:", err);
     res.status(500).json({
@@ -430,6 +462,7 @@ router.post("/send-file", authMiddleware, uploadFile.single("file"), async (req,
     });
   }
 });
+
 
 /// route that get there recived name,picture by phone number
 router.get("/user-info/:PhoneNumber", async (req, res) => {
