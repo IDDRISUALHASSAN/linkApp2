@@ -82,7 +82,7 @@ try {
     to: `whatsapp:${PhoneNumber}`,
     body: `Your verification code is ${otp}. It expires in 5 minutes.`,
   });
-  console.log(`✅ WhatsApp OTP sent to ${PhoneNumber}`);
+  console.log(`WhatsApp OTP sent to ${PhoneNumber}`);
 } catch (twilioErr) {
   console.error("❌ Twilio WhatsApp Error:", twilioErr.message);
 }
