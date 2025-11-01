@@ -20,9 +20,9 @@ const app = express();
 app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
 app.use(bodyParser.json());
 
-// ✅ Root route for testing on Render
+// Root route for testing on Render
 app.get("/", (req, res) => {
-  res.send("✅ LinkApp backend is live and running on Render!");
+  res.send(" LinkApp backend is live and running on Render!");
 });
 
 // Ensure uploads folder exists and serve it
@@ -114,7 +114,7 @@ io.on("connection", (socket) => {
 
 // Connect to DB and start server
 mongoose
-  .connect(process.env.MONGO_url, {
+  .connect(process.env.MONGO_URI, {
     useNewUrlParser: true,
     useUnifiedTopology: true,
   })

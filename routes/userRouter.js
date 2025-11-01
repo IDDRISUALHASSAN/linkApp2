@@ -84,7 +84,7 @@ try {
   });
   console.log(`WhatsApp OTP sent to ${PhoneNumber}`);
 } catch (twilioErr) {
-  console.error("❌ Twilio WhatsApp Error:", twilioErr.message);
+  console.error(" Twilio WhatsApp Error:", twilioErr.message);
 }
 	res.json({ success: true, message: "OTP sent, verify with userId + otp", userId: newUser._id });
   } catch (err) {
@@ -118,30 +118,72 @@ router.post("/verify", async (req, res) => {
 });
 
 // 🔹 Resend OTP (new feature)
+// 🔹 Resend OTP (refined version)
 router.post("/resend-otp", async (req, res) => {
   try {
-	const { PhoneNumber } = req.body;
-	const user = await User.findOne({ PhoneNumber });
-	if (!user) return res.status(404).json({ success: false, message: "User not found" });
-	if (user.isVerified) return res.status(400).json({ success: false, message: "Account already verified" });
+    const { PhoneNumber } = req.body;
 
-	const otp = Math.floor(100000 + Math.random() * 900000).toString();
-	user.otp = otp;
-	user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 mins
-	await user.save();
-try {
-  await client.messages.create({
-    from: "whatsapp:+14155238886",
-    to: `whatsapp:${PhoneNumber}`,
-    body: `Your verification code is ${otp}. It expires in 5 minutes.`,
-  });
-  console.log(`✅ WhatsApp OTP sent to ${PhoneNumber}`);
-} catch (twilioErr) {
-  console.error("❌ Twilio WhatsApp Error:", twilioErr.message);
-}
-	res.json({ success: true, message: "New OTP sent" });
+    if (!PhoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    // Find user by phone
+    const user = await User.findOne({ PhoneNumber });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    if (user.isVerified) {
+      return res.status(400).json({ success: false, message: "Account already verified" });
+    }
+
+    // Check if user has recently requested a resend (to prevent abuse)
+    const now = Date.now();
+    if (user.lastOtpSent && now - user.lastOtpSent < 60 * 1000) {
+      const waitSeconds = Math.ceil((60 * 1000 - (now - user.lastOtpSent)) / 1000);
+      return res.status(429).json({
+        success: false,
+        message: `Please wait ${waitSeconds}s before requesting another OTP.`,
+      });
+    }
+
+    // Generate and save new OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000; // valid for 5 minutes
+    user.lastOtpSent = Date.now(); // for cooldown tracking
+    await user.save();
+
+    // Send WhatsApp message
+    try {
+      await client.messages.create({
+        from: "whatsapp:+14155238886",
+        to: `whatsapp:${PhoneNumber}`,
+        body: `Your new verification code is ${otp}. It expires in 5 minutes.`,
+      });
+      console.log(` WhatsApp OTP re-sent to ${PhoneNumber}`);
+    } catch (twilioErr) {
+      console.error(" Twilio WhatsApp Error:", twilioErr.message);
+      return res.status(500).json({
+        success: false,
+        message: "Failed to send OTP via WhatsApp",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "New OTP sent successfully via WhatsApp",
+    });
   } catch (err) {
-	res.status(500).json({ success: false, message: err.message });
+    console.error("Resend OTP Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error, please try again",
+      error: err.message,
+    });
   }
 });
 
@@ -425,11 +467,8 @@ router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), as
       return res.status(400).json({ success: false, message: "File is required" });
 
     // 🔸 Detect file type (image, video, audio, raw, etc.)
-    let resourceType = "auto";
-    if (req.file.mimetype.startsWith("image/")) resourceType = "image";
-    else if (req.file.mimetype.startsWith("video/")) resourceType = "video";
-    else if (req.file.mimetype.startsWith("audio/")) resourceType = "auto";
-    else resourceType = "raw"; // for pdf, docx, zip, etc.
+   const resourceType = "auto";
+
 
     // 🔸 Upload to Cloudinary
     const uploadResult = await cloudinary.uploader.upload(req.file.path, {
