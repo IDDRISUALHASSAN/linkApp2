@@ -8,11 +8,14 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const cloudinary = require("./../cloudinary");
+const { parsePhoneNumberFromString } = require("libphonenumber-js");
 
 
 let pendingUsers = {};
 const router = express.Router();
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+
+
 
 // helper: generate token
 const generateToken = (user) => {
@@ -232,15 +235,57 @@ router.post("/logout", authMiddleware, (req, res) => {
 });
 
 // users with contacts
-router.get("/users", async (req, res) => {
+
+
+
+
+//  Helper to normalize numbers (makes them look like 233541234567)
+const normalizeNumber = (num, defaultCountry = "GH") => {
   try {
-	const users = await User.find({}, "name PhoneNumber online profilePic");
-	res.json({ success: true, users });
+    const phone = parsePhoneNumberFromString(num, defaultCountry);
+    if (phone && phone.isValid()) {
+      return phone.number.replace("+", "");
+    }
   } catch (err) {
-	console.error("Error fetching users:", err);
-	res.status(500).json({ success: false, message: "Server error" });
+    console.error("Invalid number:", num);
+  }
+  return null;
+};
+
+// Route to fetch only registered contacts
+// ✅ Fetch only registered contacts
+router.post("/users", async (req, res) => {
+  try {
+    const { phoneNumbers, countryCode } = req.body;
+
+    if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid contacts list" });
+    }
+
+    // Remove duplicates and invalid entries
+    const cleanedNumbers = [...new Set(phoneNumbers.filter(Boolean))];
+
+    console.log("📨 Received from frontend:", cleanedNumbers);
+
+    // ✅ Match the exact DB field: PhoneNumber (with uppercase P)
+    const users = await User.find(
+      { PhoneNumber: { $in: cleanedNumbers } },
+      "name PhoneNumber online profilePic"
+    );
+
+    console.log("✅ Found users:", users.length);
+    res.json({ success: true, users });
+  } catch (err) {
+    console.error("❌ Error fetching contacts:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+
+
+
 
 router.get("/profile", authMiddleware, async (req, res) => {
   try {
