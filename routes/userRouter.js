@@ -9,6 +9,7 @@ const path = require("path");
 const multer = require("multer");
 const cloudinary = require("./../cloudinary");
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
+const message = require("../model/message");
 
 
 let pendingUsers = {};
@@ -120,8 +121,7 @@ router.post("/verify", async (req, res) => {
   }
 });
 
-// 🔹 Resend OTP (new feature)
-// 🔹 Resend OTP (refined version)
+//  Resend OTP (refined version)
 router.post("/resend-otp", async (req, res) => {
   try {
     const { PhoneNumber } = req.body;
@@ -190,7 +190,7 @@ router.post("/resend-otp", async (req, res) => {
   }
 });
 
-// 🔹 Login
+//  Login
 router.post("/login", async (req, res) => {
   try {
 	const { PhoneNumber, password } = req.body;
@@ -229,57 +229,106 @@ router.post("/change-password", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔹 Logout (frontend will just delete token, but API for consistency)
-router.post("/logout", authMiddleware, (req, res) => {
-  res.json({ success: true, message: "Logged out successfully" });
+/// Request password reset via WhatsApp OTP
+router.post("/resetpassword", async (req, res) => {
+  try {
+    const { PhoneNumber } = req.body;
+
+    if (!PhoneNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    const user = await User.findOne({ PhoneNumber });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Save OTP and expiration
+    user.otp = otp;
+    user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 minutes
+    await user.save();
+
+    //  Send OTP via WhatsApp using Twilio
+    const message = await client.messages.create({
+      from: "whatsapp:+14155238886",
+    to: `whatsapp:${PhoneNumber}`,
+      body: `Your LinkApp password reset code is: ${otp}. It expires in 5 minutes.`,
+    });
+
+    console.log("WhatsApp OTP sent:", message.sid);
+
+    res.json({
+      success: true,
+      message: "OTP sent successfully via WhatsApp.",
+    });
+  } catch (err) {
+    console.error("Reset Password Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error, please try again",
+    });
+  }
 });
 
-// users with contacts
-
-
-
-
-//  Helper to normalize numbers (makes them look like 233541234567)
-const normalizeNumber = (num, defaultCountry = "GH") => {
+//  Confirm password reset with OTP
+// Verify OTP and reset password
+router.post("/verify-reset-otp", async (req, res) => {
   try {
-    const phone = parsePhoneNumberFromString(num, defaultCountry);
-    if (phone && phone.isValid()) {
-      return phone.number.replace("+", "");
-    }
-  } catch (err) {
-    console.error("Invalid number:", num);
-  }
-  return null;
-};
+    const { PhoneNumber, otp, newPassword } = req.body;
 
-// Route to fetch only registered contacts
-// ✅ Fetch only registered contacts
-router.post("/users", async (req, res) => {
-  try {
-    const { phoneNumbers, countryCode } = req.body;
-
-    if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid contacts list" });
+    if (!PhoneNumber || !otp || !newPassword) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields are required",
+      });
     }
 
-    // Remove duplicates and invalid entries
-    const cleanedNumbers = [...new Set(phoneNumbers.filter(Boolean))];
+    const user = await User.findOne({ PhoneNumber });
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
 
-    console.log("📨 Received from frontend:", cleanedNumbers);
+    // Check if OTP matches and not expired
+    if (user.otp !== otp || user.otpExpires < Date.now()) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired OTP",
+      });
+    }
 
-    // ✅ Match the exact DB field: PhoneNumber (with uppercase P)
-    const users = await User.find(
-      { PhoneNumber: { $in: cleanedNumbers } },
-      "name PhoneNumber online profilePic"
-    );
+    // Hash and save new password
+    const bcrypt = require("bcrypt");
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-    console.log("✅ Found users:", users.length);
-    res.json({ success: true, users });
+    user.password = hashedPassword;
+    user.otp = null;
+    user.otpExpires = null;
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: "Password reset successful! You can now log in.",
+    });
   } catch (err) {
-    console.error("❌ Error fetching contacts:", err);
-    res.status(500).json({ success: false, message: "Server error" });
+    console.error("Verify OTP Error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error, please try again",
+    });
   }
 });
 
