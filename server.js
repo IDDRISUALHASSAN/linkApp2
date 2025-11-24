@@ -14,11 +14,13 @@ const userRouter = require("./routes/userRouter");
 const Message = require("./model/message");
 const User = require("./model/user");
 
+
 const app = express();
 
 // Middleware
 app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
 app.use(bodyParser.json());
+
 
 // Root route for testing on Render
 app.get("/", (req, res) => {
@@ -33,14 +35,26 @@ app.use("/uploads", express.static(uploadDir));
 // Mount your routes
 app.use("/", userRouter);
 
+
+
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
+  transports: ["websocket", "polling"],
+  pingInterval: 25000,
+  pingTimeout: 60000,
 });
+
+
+
+//attached globally
+app.set("io", io);
+
 
 // Online users map
 let onlineUsers = {};
+
 
 const setUserOnlineStatus = async (phoneNumber, status) => {
   try {
@@ -79,12 +93,20 @@ io.on("connection", (socket) => {
 
     await msg.save();
 
-    if (onlineUsers[to]) {
-      io.to(onlineUsers[to]).emit("message", msg);
-    }
+    // Send actual chat message
+  if (onlineUsers[to]) {
+    io.to(onlineUsers[to]).emit("message", msg);
 
-    socket.emit("messageSent", msg);
-  });
+    //  Send notification separately
+    io.to(onlineUsers[to]).emit("notification", {
+      from,
+      message: text,
+      time: Date.now(),
+    });
+  }
+
+  socket.emit("messageSent", msg);
+});
 
   socket.on("loadHistory", async ({ from, to }) => {
     if (!from || !to) return;
@@ -99,6 +121,25 @@ io.on("connection", (socket) => {
     }
   });
 
+
+  socket.on("typing", ({ from, to, isTyping }) => {
+    if (onlineUsers[to]) {
+      io.to(onlineUsers[to]).emit("typing", { from, isTyping });
+    }
+  });
+
+  socket.on("stopTyping", ({ from, to }) => {   
+    if (onlineUsers[to]) {
+      io.to(onlineUsers[to]).emit("stopTyping", { from });
+    }
+  });
+
+  socket.on("join",(userId)=>{
+    socket.join(userId);
+    console.log(`${userId} joined their room`);
+  });
+
+
   socket.on("disconnect", async () => {
     console.log("Socket disconnected:", socket.id);
     const phone = Object.keys(onlineUsers).find(
@@ -112,6 +153,12 @@ io.on("connection", (socket) => {
   });
 });
 
+
+
+
+
+
+
 // Connect to DB and start server
 mongoose
   .connect(process.env.MONGO_URI, {
@@ -119,9 +166,9 @@ mongoose
     useUnifiedTopology: true,
   })
   .then(() => {
-    console.log("✅ Connected to MongoDB");
+    console.log("Connected to MongoDB");
     server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
-      console.log("🚀 Server running on port", process.env.PORT || 3000);
+      console.log(" Server running on port", process.env.PORT || 3000);
     });
   })
   .catch((err) => console.log("DB error:", err));

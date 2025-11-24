@@ -10,6 +10,7 @@ const multer = require("multer");
 const cloudinary = require("./../cloudinary");
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
 const message = require("../model/message");
+const { time } = require("console");
 
 
 let pendingUsers = {};
@@ -280,7 +281,7 @@ router.post("/resetpassword", async (req, res) => {
   }
 });
 
-//  Confirm password reset with OTP
+
 // Verify OTP and reset password
 router.post("/verify-reset-otp", async (req, res) => {
   try {
@@ -553,6 +554,7 @@ const uploadFile = multer({
 router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
   try {
     const { from, to, text } = req.body;
+    const io = req.app.get("io");
 
     if (!from || !to)
       return res.status(400).json({ success: false, message: "Sender and receiver required" });
@@ -584,16 +586,57 @@ router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), as
 
     await newMessage.save();
 
-    res.json({
+   
+    // 🔔 Emit notification to receiver
+    io.to(to).emit("notification", {
+      from,
+      message: text || "Sent a file",
+      time: Date.now(),
+    });
+
+    return res.json({
       success: true,
       message: newMessage,
     });
+
   } catch (err) {
     console.error("send-file error:", err);
     res.status(500).json({
       success: false,
       message: err.message || "Server error while uploading file",
     });
+  }
+});
+
+
+// POST /users — find all users that match phone numbers from mobile
+//  Fetch only registered contacts
+router.post("/users", async (req, res) => {
+  try {
+    const { phoneNumbers, countryCode } = req.body;
+
+    if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid contacts list" });
+    }
+
+    // Remove duplicates and invalid entries
+    const cleanedNumbers = [...new Set(phoneNumbers.filter(Boolean))];
+
+    console.log("📨 Received from frontend:", cleanedNumbers);
+
+    //  Match the exact DB field: PhoneNumber (with uppercase P)
+    const users = await User.find(
+      { PhoneNumber: { $in: cleanedNumbers } },
+      "name PhoneNumber online profilePic"
+    );
+
+    console.log(" Found users:", users.length);
+    res.json({ success: true, users });
+  } catch (err) {
+    console.error(" Error fetching contacts:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
@@ -640,6 +683,6 @@ router.use("/uploads", express.static(uploadDir));
 
 
 router.get("/", (req, res) => {
-  res.send("✅ LinkApp backend is live and ready!");
+  res.send(" LinkApp backend is live and ready!");
 });
 module.exports = router;
