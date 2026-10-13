@@ -14,6 +14,32 @@ const { time } = require("console");
 const { Expo } = require('expo-server-sdk');
 const expo = new Expo();
 
+const sendExpoNotification = async (token, title, body, data = {}) => {
+  if (!token) {
+    return { success: false, reason: "missing_token" };
+  }
+
+  if (!Expo.isExpoPushToken(token)) {
+    return { success: false, reason: "invalid_token" };
+  }
+
+  try {
+    const messages = [{ to: token, sound: "default", title, body, data }];
+    const chunks = expo.chunkPushNotifications(messages);
+    const results = [];
+
+    for (const chunk of chunks) {
+      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+      results.push(...ticketChunk);
+    }
+
+    return { success: true, results };
+  } catch (error) {
+    console.error("Expo push error:", error);
+    return { success: false, reason: error.message };
+  }
+};
+
 
 let pendingUsers = {};
 const router = express.Router();
@@ -53,20 +79,18 @@ router.post("/signup", async (req, res) => {
   const existing = await User.findOne({ PhoneNumber });
 
   if (existing) {
-    if (existing.verified) {
-      // If the number is already verified, stop signup
+    if (existing.isVerified) {
       return res.status(400).json({
         success: false,
         message: "Phone already registered",
       });
     } else {
-      // Number exists but not verified yet — tell user to verify OTP
-     return res.status(200).json({
-  success: true,
-  message: "Account exists but not verified. Proceed to OTP verification.",
-  userId: existing._id,
-  pendingVerification: true,
-});
+      return res.status(200).json({
+        success: true,
+        message: "Account exists but not verified. Proceed to OTP verification.",
+        userId: existing._id,
+        pendingVerification: true,
+      });
     }
   }
 
@@ -564,20 +588,15 @@ router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), as
     if (!req.file)
       return res.status(400).json({ success: false, message: "File is required" });
 
-    // 🔸 Detect file type (image, video, audio, raw, etc.)
-   const resourceType = "auto";
+    const resourceType = "auto";
 
-
-    // 🔸 Upload to Cloudinary
     const uploadResult = await cloudinary.uploader.upload(req.file.path, {
       folder: "user_uploads/files",
       resource_type: resourceType,
     });
 
-    // 🔸 Delete local file after uploading
     fs.unlinkSync(req.file.path);
 
-    // 🔸 Save message in MongoDB
     const newMessage = new Message({
       from,
       to,
@@ -588,13 +607,24 @@ router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), as
 
     await newMessage.save();
 
-   
-    // 🔔 Emit notification to receiver
-    io.to(to).emit("notification", {
-      from,
-      message: text || "Sent a file",
-      time: Date.now(),
-    });
+    if (io && io.sockets && io.sockets.sockets && io.sockets.sockets.has(to)) {
+      io.to(to).emit("notification", {
+        from,
+        message: text || "Sent a file",
+        time: Date.now(),
+      });
+    } else {
+      const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken");
+      if (receiver && receiver.expoPushToken) {
+        const expoResponse = await sendExpoNotification(
+          receiver.expoPushToken,
+          "New file",
+          `${from} sent you a file`,
+          { type: "file_message", from, to }
+        );
+        console.log("File expo push result:", expoResponse);
+      }
+    }
 
     return res.json({
       success: true,
@@ -694,35 +724,51 @@ router.post("/save-token", async (req, res) => {
   try {
     const { phoneNumber, expoPushToken } = req.body;
 
-    await User.findOneAndUpdate(
+    if (!phoneNumber || !expoPushToken) {
+      return res.status(400).json({ success: false, message: "Phone number and expo token are required" });
+    }
+
+    if (!Expo.isExpoPushToken(expoPushToken)) {
+      return res.status(400).json({ success: false, message: "Invalid Expo push token" });
+    }
+
+    const user = await User.findOneAndUpdate(
       { PhoneNumber: phoneNumber },
-      { expoPushToken },
+      { expoPushToken: expoPushToken.trim() },
       { new: true }
     );
 
-    res.json({ success: true });
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    res.json({ success: true, message: "Expo token saved" });
   } catch (err) {
     console.log(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // send push notification
 router.post('/send-notification', async (req, res) => {
-  const { token, title, body } = req.body;
+  try {
+    const { token, title, body, data } = req.body;
 
-  const messages = [
-    {
-      to: token,
-      sound: 'default',
-      title,
-      body,
-    },
-  ];
+    if (!token) {
+      return res.status(400).json({ success: false, message: "Expo token is required" });
+    }
 
-  await expo.sendPushNotificationsAsync(messages);
+    const result = await sendExpoNotification(token, title || "New notification", body || "You have a new notification", data || {});
 
-  res.json({ success: true });
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.reason || "Push notification failed" });
+    }
+
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error("Send notification error:", error);
+    res.status(500).json({ success: false, message: error.message });
+  }
 });
 
 module.exports = router;
