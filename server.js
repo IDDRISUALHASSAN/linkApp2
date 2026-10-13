@@ -24,7 +24,16 @@ app.use(bodyParser.json());
 
 // Root route for testing on Render
 app.get("/", (req, res) => {
-  res.send(" LinkApp backend is live and running on Render!");
+  res.send("LinkApp backend is live and running on Render!");
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    success: true,
+    status: "ok",
+    database: mongoose.connection.readyState === 1 ? "connected" : "not-connected",
+    port,
+  });
 });
 
 // Ensure uploads folder exists and serve it
@@ -159,16 +168,30 @@ io.on("connection", (socket) => {
 
 
 
-// Connect to DB and start server
-mongoose
-  .connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
-  .then(() => {
+const port = Number(process.env.PORT) || 3000;
+
+const startServer = () => {
+  server.listen(port, "0.0.0.0", () => {
+    console.log("Server running on port", port);
+  });
+};
+
+const startDatabase = async () => {
+  if (!process.env.MONGO_URI) {
+    console.warn("MONGO_URI is not set. Create a .env file with your MongoDB Atlas connection string.");
+    startServer();
+    return;
+  }
+
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
     console.log("Connected to MongoDB");
-    server.listen(process.env.PORT || 3000, "0.0.0.0", () => {
-      console.log(" Server running on port", process.env.PORT || 3000);
-    });
-  })
-  .catch((err) => console.log("DB error:", err));
+    startServer();
+  } catch (err) {
+    console.error("DB error:", err.message || err);
+    console.warn("The server is still running, but database-backed routes will fail until MongoDB is reachable.");
+    startServer();
+  }
+};
+
+startDatabase();

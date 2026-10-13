@@ -17,7 +17,12 @@ const userSchema = new mongoose.Schema({
 
     profilePic: { type: String, default: "" },
 
+    experience: { type: String, default: "" },
+
+    skills: { type: [String], default: [] },
+
 },
+
   
 
 { timestamps: true });

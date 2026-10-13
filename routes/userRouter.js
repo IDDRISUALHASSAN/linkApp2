@@ -11,6 +11,8 @@ const cloudinary = require("./../cloudinary");
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
 const message = require("../model/message");
 const { time } = require("console");
+const { Expo } = require('expo-server-sdk');
+const expo = new Expo();
 
 
 let pendingUsers = {};
@@ -685,4 +687,42 @@ router.use("/uploads", express.static(uploadDir));
 router.get("/", (req, res) => {
   res.send(" LinkApp backend is live and ready!");
 });
+
+
+// notification token save route
+router.post("/save-token", async (req, res) => {
+  try {
+    const { phoneNumber, expoPushToken } = req.body;
+
+    await User.findOneAndUpdate(
+      { PhoneNumber: phoneNumber },
+      { expoPushToken },
+      { new: true }
+    );
+
+    res.json({ success: true });
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// send push notification
+router.post('/send-notification', async (req, res) => {
+  const { token, title, body } = req.body;
+
+  const messages = [
+    {
+      to: token,
+      sound: 'default',
+      title,
+      body,
+    },
+  ];
+
+  await expo.sendPushNotificationsAsync(messages);
+
+  res.json({ success: true });
+});
+
 module.exports = router;
