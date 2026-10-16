@@ -11,34 +11,7 @@ const cloudinary = require("./../cloudinary");
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
 const message = require("../model/message");
 const { time } = require("console");
-const { Expo } = require('expo-server-sdk');
-const expo = new Expo();
-
-const sendExpoNotification = async (token, title, body, data = {}) => {
-  if (!token) {
-    return { success: false, reason: "missing_token" };
-  }
-
-  if (!Expo.isExpoPushToken(token)) {
-    return { success: false, reason: "invalid_token" };
-  }
-
-  try {
-    const messages = [{ to: token, sound: "default", title, body, data }];
-    const chunks = expo.chunkPushNotifications(messages);
-    const results = [];
-
-    for (const chunk of chunks) {
-      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-      results.push(...ticketChunk);
-    }
-
-    return { success: true, results };
-  } catch (error) {
-    console.error("Expo push error:", error);
-    return { success: false, reason: error.message };
-  }
-};
+const { sendExpoNotification, Expo } = require("../notificationHelper");
 
 
 let pendingUsers = {};
@@ -606,24 +579,46 @@ router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), as
     });
 
     await newMessage.save();
+    console.log(`[File] Saved file message from ${from} to ${to}`);
 
-    if (io && io.sockets && io.sockets.sockets && io.sockets.sockets.has(to)) {
-      io.to(to).emit("notification", {
+    const onlineUsers = req.app.get("onlineUsers");
+    const appStateMap = req.app.get("appState");
+    const activeChats = req.app.get("activeChats");
+
+    // Deliver in real time via Socket.IO when the recipient has a connected socket
+    if (onlineUsers && onlineUsers[to]) {
+      io.to(onlineUsers[to]).emit("message", newMessage);
+      io.to(onlineUsers[to]).emit("notification", {
         from,
         message: text || "Sent a file",
         time: Date.now(),
       });
+      console.log(`[File] Socket delivered to ${to}`);
     } else {
+      console.log(`[File] ${to} has no active socket`);
+    }
+
+    // Send push notification unless the recipient is in the foreground viewing this chat
+    const recipientIsViewingChat =
+      appStateMap && activeChats &&
+      appStateMap[to] === "active" && activeChats[to] === from;
+
+    if (!recipientIsViewingChat) {
       const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken");
       if (receiver && receiver.expoPushToken) {
+        console.log(`[File] Sending push notification to ${to}`);
         const expoResponse = await sendExpoNotification(
           receiver.expoPushToken,
           "New file",
           `${from} sent you a file`,
-          { type: "file_message", from, to }
+          { type: "file_message", from, to, senderId: from }
         );
-        console.log("File expo push result:", expoResponse);
+        console.log(`[File] Push result for ${to}:`, expoResponse);
+      } else {
+        console.log(`[File] No push token stored for ${to} — push skipped`);
       }
+    } else {
+      console.log(`[File] ${to} is actively viewing this chat — skipping push`);
     }
 
     return res.json({

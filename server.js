@@ -9,13 +9,11 @@ const fs = require("fs");
 require("dotenv").config();
 
 const { Server } = require("socket.io");
-const { Expo } = require("expo-server-sdk");
 
 const userRouter = require("./routes/userRouter");
 const Message = require("./model/message");
 const User = require("./model/user");
-
-const expo = new Expo();
+const { sendExpoNotification } = require("./notificationHelper");
 
 
 const app = express();
@@ -63,10 +61,15 @@ const io = new Server(server, {
 //attached globally
 app.set("io", io);
 
-
-// Online users map
+// Online users map (phoneNumber -> socket.id)
 let onlineUsers = {};
-
+// App foreground state per phone number ("active" | "background")
+let appState = {};
+// Which conversation each phone number is actively viewing (phoneNumber -> chatPartner)
+let activeChats = {};
+app.set("onlineUsers", onlineUsers);
+app.set("appState", appState);
+app.set("activeChats", activeChats);
 
 const setUserOnlineStatus = async (phoneNumber, status) => {
   try {
@@ -80,41 +83,34 @@ const setUserOnlineStatus = async (phoneNumber, status) => {
   }
 };
 
-const sendExpoNotification = async (token, title, body, data = {}) => {
-  if (!token) {
-    return { success: false, reason: "missing_token" };
-  }
-
-  if (!Expo.isExpoPushToken(token)) {
-    return { success: false, reason: "invalid_token" };
-  }
-
-  try {
-    const messages = [{ to: token, sound: "default", title, body, data }];
-    const chunks = expo.chunkPushNotifications(messages);
-    const results = [];
-
-    for (const chunk of chunks) {
-      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-      results.push(...ticketChunk);
-    }
-
-    return { success: true, results };
-  } catch (error) {
-    console.error("Expo push error:", error);
-    return { success: false, reason: error.message };
-  }
-};
-
 io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
   socket.on("login", async (phoneNumber) => {
     if (!phoneNumber) return;
     onlineUsers[phoneNumber] = socket.id;
+    appState[phoneNumber] = "active";
     console.log(`${phoneNumber} logged in`);
     await setUserOnlineStatus(phoneNumber, true);
     socket.broadcast.emit("userOnline", phoneNumber);
+  });
+
+  socket.on("appState", ({ phoneNumber, state }) => {
+    if (!phoneNumber) return;
+    appState[phoneNumber] = state;
+    console.log(`[AppState] ${phoneNumber}: ${state}`);
+  });
+
+  socket.on("viewChat", ({ phoneNumber, chatWith }) => {
+    if (!phoneNumber) return;
+    activeChats[phoneNumber] = chatWith;
+    console.log(`[ViewChat] ${phoneNumber} viewing chat with ${chatWith}`);
+  });
+
+  socket.on("leaveChat", ({ phoneNumber }) => {
+    if (!phoneNumber) return;
+    delete activeChats[phoneNumber];
+    console.log(`[LeaveChat] ${phoneNumber} left chat view`);
   });
 
   socket.on("message", async ({ from, to, text }) => {
@@ -131,7 +127,9 @@ io.on("connection", (socket) => {
     });
 
     await msg.save();
+    console.log(`[Message] Saved message from ${from} to ${to}`);
 
+    // Deliver in real time via Socket.IO when the recipient has a connected socket
     if (onlineUsers[to]) {
       io.to(onlineUsers[to]).emit("message", msg);
       io.to(onlineUsers[to]).emit("notification", {
@@ -139,16 +137,32 @@ io.on("connection", (socket) => {
         message: trimmedText,
         time: Date.now(),
       });
+      console.log(`[Message] Socket delivered to ${to} (socket: ${onlineUsers[to]})`);
     } else {
-      const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken online");
+      console.log(`[Message] ${to} has no active socket`);
+    }
+
+    // Determine whether a push notification should be sent.
+    // Skip push only when the recipient is in the foreground AND actively reading
+    // this specific conversation (the socket already delivers the message in real time).
+    const recipientIsViewingChat =
+      appState[to] === "active" && activeChats[to] === from;
+
+    if (recipientIsViewingChat) {
+      console.log(`[Message] ${to} is actively viewing this chat — skipping push`);
+    } else {
+      const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken");
       if (receiver && receiver.expoPushToken) {
+        console.log(`[Message] Sending push notification to ${to}`);
         const expoResponse = await sendExpoNotification(
           receiver.expoPushToken,
           "New message",
           `${from}: ${trimmedText}`,
-          { type: "chat_message", from, to }
+          { type: "chat_message", from, to, senderId: from }
         );
-        console.log("Expo fallback notification result:", expoResponse);
+        console.log(`[Message] Push result for ${to}:`, expoResponse);
+      } else {
+        console.log(`[Message] No push token stored for ${to} — push skipped`);
       }
     }
 
@@ -194,6 +208,8 @@ io.on("connection", (socket) => {
     );
     if (phone) {
       delete onlineUsers[phone];
+      delete appState[phone];
+      delete activeChats[phone];
       await setUserOnlineStatus(phone, false);
       socket.broadcast.emit("userOffline", phone);
     }
