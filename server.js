@@ -15,13 +15,11 @@ const Message = require("./model/message");
 const User = require("./model/user");
 const { sendExpoNotification } = require("./notificationHelper");
 
-
 const app = express();
 
 // Middleware
 app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE"] }));
 app.use(bodyParser.json());
-
 
 // Root route for testing on Render
 app.get("/", (req, res) => {
@@ -32,7 +30,8 @@ app.get("/health", (req, res) => {
   res.json({
     success: true,
     status: "ok",
-    database: mongoose.connection.readyState === 1 ? "connected" : "not-connected",
+    database:
+      mongoose.connection.readyState === 1 ? "connected" : "not-connected",
     port,
   });
 });
@@ -45,8 +44,6 @@ app.use("/uploads", express.static(uploadDir));
 // Mount your routes
 app.use("/", userRouter);
 
-
-
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -55,8 +52,6 @@ const io = new Server(server, {
   pingInterval: 25000,
   pingTimeout: 60000,
 });
-
-
 
 //attached globally
 app.set("io", io);
@@ -76,7 +71,7 @@ const setUserOnlineStatus = async (phoneNumber, status) => {
     await User.findOneAndUpdate(
       { PhoneNumber: phoneNumber },
       { online: status },
-      { new: true }
+      { new: true },
     );
   } catch (err) {
     console.error("Error updating user status:", err);
@@ -114,7 +109,7 @@ io.on("connection", (socket) => {
   });
 
   socket.on("message", async ({ from, to, text }) => {
-    console.log("Incoming message:", { from, to, text });
+    console.log("Incoming message:", { from, to });
     if (!from || !to || !text?.trim()) return;
 
     const trimmedText = text.trim();
@@ -137,7 +132,9 @@ io.on("connection", (socket) => {
         message: trimmedText,
         time: Date.now(),
       });
-      console.log(`[Message] Socket delivered to ${to} (socket: ${onlineUsers[to]})`);
+      console.log(
+        `[Message] Socket delivered to ${to} (socket: ${onlineUsers[to]})`,
+      );
     } else {
       console.log(`[Message] ${to} has no active socket`);
     }
@@ -149,16 +146,30 @@ io.on("connection", (socket) => {
       appState[to] === "active" && activeChats[to] === from;
 
     if (recipientIsViewingChat) {
-      console.log(`[Message] ${to} is actively viewing this chat — skipping push`);
+      console.log(
+        `[Message] ${to} is actively viewing this chat — skipping push`,
+      );
     } else {
-      const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken");
-      if (receiver && receiver.expoPushToken) {
+      const receiver = await User.findOne({ PhoneNumber: to }).select(
+        "expoPushToken expoPushTokens",
+      );
+      const pushTokens = receiver
+        ? [
+            ...new Set(
+              [
+                ...(receiver.expoPushTokens || []),
+                receiver.expoPushToken,
+              ].filter(Boolean),
+            ),
+          ]
+        : [];
+      if (pushTokens.length > 0) {
         console.log(`[Message] Sending push notification to ${to}`);
         const expoResponse = await sendExpoNotification(
-          receiver.expoPushToken,
+          pushTokens,
           "New message",
           `${from}: ${trimmedText}`,
-          { type: "chat_message", from, to, senderId: from }
+          { type: "chat_message", from, to, senderId: from },
         );
         console.log(`[Message] Push result for ${to}:`, expoResponse);
       } else {
@@ -173,7 +184,10 @@ io.on("connection", (socket) => {
     if (!from || !to) return;
     try {
       const history = await Message.find({
-        $or: [{ from, to }, { from: to, to: from }],
+        $or: [
+          { from, to },
+          { from: to, to: from },
+        ],
       }).sort({ createdAt: 1 });
       socket.emit("history", history);
     } catch (err) {
@@ -182,29 +196,27 @@ io.on("connection", (socket) => {
     }
   });
 
-
   socket.on("typing", ({ from, to, isTyping }) => {
     if (onlineUsers[to]) {
       io.to(onlineUsers[to]).emit("typing", { from, isTyping });
     }
   });
 
-  socket.on("stopTyping", ({ from, to }) => {   
+  socket.on("stopTyping", ({ from, to }) => {
     if (onlineUsers[to]) {
       io.to(onlineUsers[to]).emit("stopTyping", { from });
     }
   });
 
-  socket.on("join",(userId)=>{
+  socket.on("join", (userId) => {
     socket.join(userId);
     console.log(`${userId} joined their room`);
   });
 
-
   socket.on("disconnect", async () => {
     console.log("Socket disconnected:", socket.id);
     const phone = Object.keys(onlineUsers).find(
-      (key) => onlineUsers[key] === socket.id
+      (key) => onlineUsers[key] === socket.id,
     );
     if (phone) {
       delete onlineUsers[phone];
@@ -216,12 +228,6 @@ io.on("connection", (socket) => {
   });
 });
 
-
-
-
-
-
-
 const port = Number(process.env.PORT) || 3000;
 
 const startServer = () => {
@@ -232,7 +238,9 @@ const startServer = () => {
 
 const startDatabase = async () => {
   if (!process.env.MONGO_URI) {
-    console.warn("MONGO_URI is not set. Create a .env file with your MongoDB Atlas connection string.");
+    console.warn(
+      "MONGO_URI is not set. Create a .env file with your MongoDB Atlas connection string.",
+    );
     startServer();
     return;
   }
@@ -243,7 +251,9 @@ const startDatabase = async () => {
     startServer();
   } catch (err) {
     console.error("DB error:", err.message || err);
-    console.warn("The server is still running, but database-backed routes will fail until MongoDB is reachable.");
+    console.warn(
+      "The server is still running, but database-backed routes will fail until MongoDB is reachable.",
+    );
     startServer();
   }
 };

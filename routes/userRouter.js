@@ -13,111 +13,125 @@ const message = require("../model/message");
 const { time } = require("console");
 const { sendExpoNotification, Expo } = require("../notificationHelper");
 
-
 let pendingUsers = {};
 const router = express.Router();
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
-
-
 // helper: generate token
 const generateToken = (user) => {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "7d" });
+  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+    expiresIn: "7d",
+  });
 };
 
 // middleware: protect route
 const authMiddleware = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader) return res.status(401).json({ success: false, message: "No token provided" });
+  if (!authHeader)
+    return res
+      .status(401)
+      .json({ success: false, message: "No token provided" });
   const token = authHeader.split(" ")[1];
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-	if (err) return res.status(401).json({ success: false, message: "Invalid token" });
-	req.userId = decoded.id;
-	next();
+    if (err)
+      return res.status(401).json({ success: false, message: "Invalid token" });
+    req.userId = decoded.id;
+    next();
   });
 };
 
 // 🔹 Signup → create user in DB with OTP
 router.post("/signup", async (req, res) => {
   try {
-  const { name, PhoneNumber, password } = req.body;
+    const { name, PhoneNumber, password } = req.body;
 
-  if (!name || !PhoneNumber || !password) {
-    return res.status(400).json({
-      success: false,
-      message: "All fields are required",
-    });
-  }
-
-  const existing = await User.findOne({ PhoneNumber });
-
-  if (existing) {
-    if (existing.isVerified) {
+    if (!name || !PhoneNumber || !password) {
       return res.status(400).json({
         success: false,
-        message: "Phone already registered",
-      });
-    } else {
-      return res.status(200).json({
-        success: true,
-        message: "Account exists but not verified. Proceed to OTP verification.",
-        userId: existing._id,
-        pendingVerification: true,
+        message: "All fields are required",
       });
     }
-  }
 
-	const hashedPassword = await bcrypt.hash(password, 10);
-	const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const existing = await User.findOne({ PhoneNumber });
 
-	const newUser = new User({
-	  name,
-	  PhoneNumber,
-	  password: hashedPassword,
-	  otp,
-	  otpExpires: Date.now() + 5 * 60 * 1000, // 5 mins
-	  isVerified: false
-	});
+    if (existing) {
+      if (existing.isVerified) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone already registered",
+        });
+      } else {
+        return res.status(200).json({
+          success: true,
+          message:
+            "Account exists but not verified. Proceed to OTP verification.",
+          userId: existing._id,
+          pendingVerification: true,
+        });
+      }
+    }
 
-	await newUser.save();
-try {
-  await client.messages.create({
-    from: "whatsapp:+14155238886",
-    to: `whatsapp:${PhoneNumber}`,
-    body: `Your verification code is ${otp}. It expires in 5 minutes.`,
-  });
-  console.log(`WhatsApp OTP sent to ${PhoneNumber}`);
-} catch (twilioErr) {
-  console.error(" Twilio WhatsApp Error:", twilioErr.message);
-}
-	res.json({ success: true, message: "OTP sent, verify with userId + otp", userId: newUser._id });
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    const newUser = new User({
+      name,
+      PhoneNumber,
+      password: hashedPassword,
+      otp,
+      otpExpires: Date.now() + 5 * 60 * 1000, // 5 mins
+      isVerified: false,
+    });
+
+    await newUser.save();
+    try {
+      await client.messages.create({
+        from: "whatsapp:+14155238886",
+        to: `whatsapp:${PhoneNumber}`,
+        body: `Your verification code is ${otp}. It expires in 5 minutes.`,
+      });
+      console.log(`WhatsApp OTP sent to ${PhoneNumber}`);
+    } catch (twilioErr) {
+      console.error(" Twilio WhatsApp Error:", twilioErr.message);
+    }
+    res.json({
+      success: true,
+      message: "OTP sent, verify with userId + otp",
+      userId: newUser._id,
+    });
   } catch (err) {
-	res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
 router.post("/verify", async (req, res) => {
   try {
-	const { userId, otp } = req.body;
-	if (!userId || !otp) {
-	  return res.status(400).json({ success: false, message: "userId and otp are required" });
-	}
-	const user = await User.findById(userId);
-	if (!user) return res.status(404).json({ success: false, message: "User not found" });
-	if (user.isVerified) return res.json({ success: false, message: "Already verified" });
-	if (String(user.otp).trim() !== String(otp).trim()) {
-	  return res.status(400).json({ success: false, message: "Invalid OTP" });
-	}
-	if (user.otpExpires < Date.now()) {
-	  return res.status(400).json({ success: false, message: "OTP expired" });
-	}
-	user.isVerified = true;
-	user.otp = null;
-	user.otpExpires = null;
-	await user.save();
-	res.json({ success: true, message: "Account verified, you can login now" });
+    const { userId, otp } = req.body;
+    if (!userId || !otp) {
+      return res
+        .status(400)
+        .json({ success: false, message: "userId and otp are required" });
+    }
+    const user = await User.findById(userId);
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    if (user.isVerified)
+      return res.json({ success: false, message: "Already verified" });
+    if (String(user.otp).trim() !== String(otp).trim()) {
+      return res.status(400).json({ success: false, message: "Invalid OTP" });
+    }
+    if (user.otpExpires < Date.now()) {
+      return res.status(400).json({ success: false, message: "OTP expired" });
+    }
+    user.isVerified = true;
+    user.otp = null;
+    user.otpExpires = null;
+    await user.save();
+    res.json({ success: true, message: "Account verified, you can login now" });
   } catch (err) {
-	res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -136,17 +150,23 @@ router.post("/resend-otp", async (req, res) => {
     // Find user by phone
     const user = await User.findOne({ PhoneNumber });
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     if (user.isVerified) {
-      return res.status(400).json({ success: false, message: "Account already verified" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Account already verified" });
     }
 
     // Check if user has recently requested a resend (to prevent abuse)
     const now = Date.now();
     if (user.lastOtpSent && now - user.lastOtpSent < 60 * 1000) {
-      const waitSeconds = Math.ceil((60 * 1000 - (now - user.lastOtpSent)) / 1000);
+      const waitSeconds = Math.ceil(
+        (60 * 1000 - (now - user.lastOtpSent)) / 1000,
+      );
       return res.status(429).json({
         success: false,
         message: `Please wait ${waitSeconds}s before requesting another OTP.`,
@@ -193,39 +213,57 @@ router.post("/resend-otp", async (req, res) => {
 //  Login
 router.post("/login", async (req, res) => {
   try {
-	const { PhoneNumber, password } = req.body;
-	if (!PhoneNumber || !password) {
-	  return res.status(400).json({ success: false, message: "Phone number and password required" });
-	}
-	const user = await User.findOne({ PhoneNumber });
-	if (!user) return res.status(404).json({ success: false, message: "User not found" });
-	if (!user.isVerified) return res.status(403).json({ success: false, message: "Account not verified" });
+    const { PhoneNumber, password } = req.body;
+    if (!PhoneNumber || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number and password required",
+      });
+    }
+    const user = await User.findOne({ PhoneNumber });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    if (!user.isVerified)
+      return res
+        .status(403)
+        .json({ success: false, message: "Account not verified" });
 
-	const isMatch = await bcrypt.compare(password, user.password);
-	if (!isMatch) return res.status(400).json({ success: false, message: "Invalid credentials" });
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch)
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid credentials" });
 
-	const token = generateToken(user);
-	res.json({ success: true, token, userId: user._id });
+    const token = generateToken(user);
+    res.json({ success: true, token, userId: user._id });
   } catch (err) {
-	res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
 // 🔹 Change Password
 router.post("/change-password", authMiddleware, async (req, res) => {
   try {
-	const { oldPassword, newPassword } = req.body;
-	const user = await User.findById(req.userId);
-	if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    const { oldPassword, newPassword } = req.body;
+    const user = await User.findById(req.userId);
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
 
-	const isMatch = await bcrypt.compare(oldPassword, user.password);
-	if (!isMatch) return res.status(400).json({ success: false, message: "Old password is incorrect" });
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch)
+      return res
+        .status(400)
+        .json({ success: false, message: "Old password is incorrect" });
 
-	user.password = await bcrypt.hash(newPassword, 10);
-	await user.save();
-	res.json({ success: true, message: "Password changed successfully" });
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    res.json({ success: true, message: "Password changed successfully" });
   } catch (err) {
-	res.status(500).json({ success: false, message: err.message });
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 
@@ -261,7 +299,7 @@ router.post("/resetpassword", async (req, res) => {
     //  Send OTP via WhatsApp using Twilio
     const message = await client.messages.create({
       from: "whatsapp:+14155238886",
-    to: `whatsapp:${PhoneNumber}`,
+      to: `whatsapp:${PhoneNumber}`,
       body: `Your LinkApp password reset code is: ${otp}. It expires in 5 minutes.`,
     });
 
@@ -279,7 +317,6 @@ router.post("/resetpassword", async (req, res) => {
     });
   }
 });
-
 
 // Verify OTP and reset password
 router.post("/verify-reset-otp", async (req, res) => {
@@ -332,141 +369,181 @@ router.post("/verify-reset-otp", async (req, res) => {
   }
 });
 
-
-
-
-
 router.get("/profile", authMiddleware, async (req, res) => {
   try {
-	const user = await User.findById(req.userId).select("name PhoneNumber profilePic online");
-	if (!user) {
-	  return res.status(404).json({ success: false, message: "User not found or token invalid" });
-	}
-	res.json({ success: true, user, requestedAt: new Date().toISOString() }); // optional: adds timestamp
+    const user = await User.findById(req.userId).select(
+      "name PhoneNumber profilePic online",
+    );
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found or token invalid" });
+    }
+    res.json({ success: true, user, requestedAt: new Date().toISOString() }); // optional: adds timestamp
   } catch (err) {
-	console.error("Profile Error:", err); // better debugging
-	res.status(500).json({ success: false, message: "Something went wrong, please try again" });
+    console.error("Profile Error:", err); // better debugging
+    res.status(500).json({
+      success: false,
+      message: "Something went wrong, please try again",
+    });
   }
 });
 
 /// delete message
 router.delete("/messages/:id", authMiddleware, async (req, res) => {
   try {
-	const messageId = req.params.id;
-	// Get logged-in user’s phone number
-	const user = await User.findById(req.userId).select("PhoneNumber");
-	if (!user) {
-	  return res.status(404).json({ success: false, message: "User not found" });
-	}
-	// Find message
-	const message = await Message.findById(messageId);
-	if (!message) {
-	  return res.status(404).json({ success: false, message: "Message not found" });
-	}
-	// Ensure user is sender or receiver
-	if (message.from !== user.PhoneNumber && message.to !== user.PhoneNumber) {
-	  return res.status(403).json({ success: false, message: "Unauthorized" });
-	}
-	await Message.findByIdAndDelete(messageId);
-	return res.json({ success: true, message: "Message deleted successfully" });
+    const messageId = req.params.id;
+    // Get logged-in user’s phone number
+    const user = await User.findById(req.userId).select("PhoneNumber");
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+    // Find message
+    const message = await Message.findById(messageId);
+    if (!message) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
+    }
+    // Ensure user is sender or receiver
+    if (message.from !== user.PhoneNumber && message.to !== user.PhoneNumber) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+    await Message.findByIdAndDelete(messageId);
+    return res.json({ success: true, message: "Message deleted successfully" });
   } catch (err) {
-	console.error("Error deleting message:", err);
-	return res.status(500).json({ success: false, message: "Server error" });
+    console.error("Error deleting message:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 // 🔹 Get conversation
 router.get("/conversations/:phone", async (req, res) => {
   try {
-	const phone = req.params.phone;
-	if (!phone) return res.status(400).json({ success: false, message: "phone required" });
+    const phone = req.params.phone;
+    if (!phone)
+      return res
+        .status(400)
+        .json({ success: false, message: "phone required" });
 
-	const conversations = await Message.aggregate([
-	  { $match: { $or: [{ from: phone }, { to: phone }] } },
-	  { $addFields: { other: { $cond: [{ $eq: ["$from", phone] }, "$to", "$from"] } } },
-	  { $sort: { createdAt: -1 } },
-	  {
-		$group: {
-		  _id: "$other",
-		  lastMessage: { $first: "$text" },
-		  lastAt: { $first: "$createdAt" },
-		  lastFrom: { $first: "$from" },
-		  unreadCount: {
-			$sum: {
-			  $cond: [{ $and: [{ $eq: ["$to", phone] }, { $ne: ["$read", true] }] }, 1, 0]
-			}
-		  }
-		}
-	  },
-	  { $lookup: { from: "users", localField: "_id", foreignField: "PhoneNumber", as: "user" } },
-	  { $addFields: { name: { $arrayElemAt: ["$user.name", 0] }, online: { $arrayElemAt: ["$user.online", 0] } } },
-	  { $addFields: { profilePic: { $arrayElemAt: ["$user.profilePic", 0] } } },
-	  {
-		$project: {
-		  _id: 0,
-		  phone: "$_id",
-		  name: 1,
-		  online: 1,
-		  lastMessage: 1,
-		  lastAt: 1,
-		  lastFrom: 1,
-      profilePic: 1,
-		  unreadCount: 1
-		}
-	  },
-	  { $sort: { lastAt: -1 } }
-	]);
+    const conversations = await Message.aggregate([
+      { $match: { $or: [{ from: phone }, { to: phone }] } },
+      {
+        $addFields: {
+          other: { $cond: [{ $eq: ["$from", phone] }, "$to", "$from"] },
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: "$other",
+          lastMessage: { $first: "$text" },
+          lastAt: { $first: "$createdAt" },
+          lastFrom: { $first: "$from" },
+          unreadCount: {
+            $sum: {
+              $cond: [
+                { $and: [{ $eq: ["$to", phone] }, { $ne: ["$read", true] }] },
+                1,
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "PhoneNumber",
+          as: "user",
+        },
+      },
+      {
+        $addFields: {
+          name: { $arrayElemAt: ["$user.name", 0] },
+          online: { $arrayElemAt: ["$user.online", 0] },
+        },
+      },
+      { $addFields: { profilePic: { $arrayElemAt: ["$user.profilePic", 0] } } },
+      {
+        $project: {
+          _id: 0,
+          phone: "$_id",
+          name: 1,
+          online: 1,
+          lastMessage: 1,
+          lastAt: 1,
+          lastFrom: 1,
+          profilePic: 1,
+          unreadCount: 1,
+        },
+      },
+      { $sort: { lastAt: -1 } },
+    ]);
 
-	res.json({ success: true, conversations });
+    res.json({ success: true, conversations });
   } catch (err) {
-	console.error("Error fetching conversations:", err);
-	res.status(500).json({ success: false, message: "Server error" });
+    console.error("Error fetching conversations:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 // profile picture upload
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-	const uploadPath = path.join(__dirname, "../uploads/");
-	fs.mkdirSync(uploadPath, { recursive: true });
-	cb(null, uploadPath);
+    const uploadPath = path.join(__dirname, "../uploads/");
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
   },
   filename: (req, file, cb) => {
-	const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-	cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(
+      null,
+      file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname),
+    );
   },
 });
 
 const upload = multer({ storage });
 
-router.post("/profilepic", authMiddleware, upload.single("picture"), async (req, res) => {
-  try {
-    const user = await User.findById(req.userId);
-    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+router.post(
+  "/profilepic",
+  authMiddleware,
+  upload.single("picture"),
+  async (req, res) => {
+    try {
+      const user = await User.findById(req.userId);
+      if (!user)
+        return res
+          .status(404)
+          .json({ success: false, message: "User not found" });
 
-    // Upload image to Cloudinary
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      folder: "user_uploads/profile_pics",
-    });
+      // Upload image to Cloudinary
+      const result = await cloudinary.uploader.upload(req.file.path, {
+        folder: "user_uploads/profile_pics",
+      });
 
-    // Save image URL in MongoDB
-    user.profilePic = result.secure_url;
-    await user.save();
+      // Save image URL in MongoDB
+      user.profilePic = result.secure_url;
+      await user.save();
 
-    // Optional: Delete local file
-    fs.unlinkSync(req.file.path);
+      // Optional: Delete local file
+      fs.unlinkSync(req.file.path);
 
-    res.json({
-      success: true,
-      message: "Profile picture uploaded successfully",
-      imageUrl: result.secure_url,
-    });
-  } catch (err) {
-    console.error("Error uploading profile picture:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
+      res.json({
+        success: true,
+        message: "Profile picture uploaded successfully",
+        imageUrl: result.secure_url,
+      });
+    } catch (err) {
+      console.error("Error uploading profile picture:", err);
+      res.status(500).json({ success: false, message: "Server error" });
+    }
+  },
+);
 
 // 🔹 Mark messages as read
 router.post("/messages/mark-read", async (req, res) => {
@@ -474,13 +551,15 @@ router.post("/messages/mark-read", async (req, res) => {
     const { from, to } = req.body;
 
     if (!from || !to) {
-      return res.status(400).json({ success: false, message: "Missing fields" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing fields" });
     }
 
     // Update all unread messages where sender = from and receiver = to
     const result = await Message.updateMany(
       { from: from, to: to, read: false },
-      { $set: { read: true } }
+      { $set: { read: true } },
     );
 
     return res.json({ success: true, modifiedCount: result.modifiedCount });
@@ -489,7 +568,6 @@ router.post("/messages/mark-read", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 const uploadDir = path.join(__dirname, "../uploads");
 
@@ -525,7 +603,7 @@ const allowedMimeTypes = [
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
   "application/zip",
   "application/x-rar-compressed",
-  "application/x-7z-compressed",		
+  "application/x-7z-compressed",
   "audio/mpeg",
   "audio/wav",
   "audio/ogg",
@@ -550,91 +628,114 @@ const uploadFile = multer({
 });
 
 // 🔹 Send File (Uploads to Cloudinary)
-router.post("/messages/send-file", authMiddleware, uploadFile.single("file"), async (req, res) => {
-  try {
-    const { from, to, text } = req.body;
-    const io = req.app.get("io");
+router.post(
+  "/messages/send-file",
+  authMiddleware,
+  uploadFile.single("file"),
+  async (req, res) => {
+    try {
+      const { from, to, text } = req.body;
+      const io = req.app.get("io");
 
-    if (!from || !to)
-      return res.status(400).json({ success: false, message: "Sender and receiver required" });
+      if (!from || !to)
+        return res
+          .status(400)
+          .json({ success: false, message: "Sender and receiver required" });
 
-    if (!req.file)
-      return res.status(400).json({ success: false, message: "File is required" });
+      if (!req.file)
+        return res
+          .status(400)
+          .json({ success: false, message: "File is required" });
 
-    const resourceType = "auto";
+      const resourceType = "auto";
 
-    const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-      folder: "user_uploads/files",
-      resource_type: resourceType,
-    });
-
-    fs.unlinkSync(req.file.path);
-
-    const newMessage = new Message({
-      from,
-      to,
-      text: text || "",
-      fileUrl: uploadResult.secure_url,
-      fileType: req.file.mimetype,
-    });
-
-    await newMessage.save();
-    console.log(`[File] Saved file message from ${from} to ${to}`);
-
-    const onlineUsers = req.app.get("onlineUsers");
-    const appStateMap = req.app.get("appState");
-    const activeChats = req.app.get("activeChats");
-
-    // Deliver in real time via Socket.IO when the recipient has a connected socket
-    if (onlineUsers && onlineUsers[to]) {
-      io.to(onlineUsers[to]).emit("message", newMessage);
-      io.to(onlineUsers[to]).emit("notification", {
-        from,
-        message: text || "Sent a file",
-        time: Date.now(),
+      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+        folder: "user_uploads/files",
+        resource_type: resourceType,
       });
-      console.log(`[File] Socket delivered to ${to}`);
-    } else {
-      console.log(`[File] ${to} has no active socket`);
-    }
 
-    // Send push notification unless the recipient is in the foreground viewing this chat
-    const recipientIsViewingChat =
-      appStateMap && activeChats &&
-      appStateMap[to] === "active" && activeChats[to] === from;
+      fs.unlinkSync(req.file.path);
 
-    if (!recipientIsViewingChat) {
-      const receiver = await User.findOne({ PhoneNumber: to }).select("expoPushToken");
-      if (receiver && receiver.expoPushToken) {
-        console.log(`[File] Sending push notification to ${to}`);
-        const expoResponse = await sendExpoNotification(
-          receiver.expoPushToken,
-          "New file",
-          `${from} sent you a file`,
-          { type: "file_message", from, to, senderId: from }
-        );
-        console.log(`[File] Push result for ${to}:`, expoResponse);
+      const newMessage = new Message({
+        from,
+        to,
+        text: text || "",
+        fileUrl: uploadResult.secure_url,
+        fileType: req.file.mimetype,
+      });
+
+      await newMessage.save();
+      console.log(`[File] Saved file message from ${from} to ${to}`);
+
+      const onlineUsers = req.app.get("onlineUsers");
+      const appStateMap = req.app.get("appState");
+      const activeChats = req.app.get("activeChats");
+
+      // Deliver in real time via Socket.IO when the recipient has a connected socket
+      if (onlineUsers && onlineUsers[to]) {
+        io.to(onlineUsers[to]).emit("message", newMessage);
+        io.to(onlineUsers[to]).emit("notification", {
+          from,
+          message: text || "Sent a file",
+          time: Date.now(),
+        });
+        console.log(`[File] Socket delivered to ${to}`);
       } else {
-        console.log(`[File] No push token stored for ${to} — push skipped`);
+        console.log(`[File] ${to} has no active socket`);
       }
-    } else {
-      console.log(`[File] ${to} is actively viewing this chat — skipping push`);
+
+      // Send push notification unless the recipient is in the foreground viewing this chat
+      const recipientIsViewingChat =
+        appStateMap &&
+        activeChats &&
+        appStateMap[to] === "active" &&
+        activeChats[to] === from;
+
+      if (!recipientIsViewingChat) {
+        const receiver = await User.findOne({ PhoneNumber: to }).select(
+          "expoPushToken expoPushTokens",
+        );
+        const pushTokens = receiver
+          ? [
+              ...new Set(
+                [
+                  ...(receiver.expoPushTokens || []),
+                  receiver.expoPushToken,
+                ].filter(Boolean),
+              ),
+            ]
+          : [];
+        if (pushTokens.length > 0) {
+          console.log(`[File] Sending push notification to ${to}`);
+          const expoResponse = await sendExpoNotification(
+            pushTokens,
+            "New file",
+            `${from} sent you a file`,
+            { type: "file_message", from, to, senderId: from },
+          );
+          console.log(`[File] Push result for ${to}:`, expoResponse);
+        } else {
+          console.log(`[File] No push token stored for ${to} — push skipped`);
+        }
+      } else {
+        console.log(
+          `[File] ${to} is actively viewing this chat — skipping push`,
+        );
+      }
+
+      return res.json({
+        success: true,
+        message: newMessage,
+      });
+    } catch (err) {
+      console.error("send-file error:", err);
+      res.status(500).json({
+        success: false,
+        message: err.message || "Server error while uploading file",
+      });
     }
-
-    return res.json({
-      success: true,
-      message: newMessage,
-    });
-
-  } catch (err) {
-    console.error("send-file error:", err);
-    res.status(500).json({
-      success: false,
-      message: err.message || "Server error while uploading file",
-    });
-  }
-});
-
+  },
+);
 
 // POST /users — find all users that match phone numbers from mobile
 //  Fetch only registered contacts
@@ -656,7 +757,7 @@ router.post("/users", async (req, res) => {
     //  Match the exact DB field: PhoneNumber (with uppercase P)
     const users = await User.find(
       { PhoneNumber: { $in: cleanedNumbers } },
-      "name PhoneNumber online profilePic"
+      "name PhoneNumber online profilePic",
     );
 
     console.log(" Found users:", users.length);
@@ -666,7 +767,6 @@ router.post("/users", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 /// route that get there recived name,picture by phone number
 router.get("/user-info/:PhoneNumber", async (req, res) => {
@@ -681,7 +781,9 @@ router.get("/user-info/:PhoneNumber", async (req, res) => {
     }
 
     // Only select what you need — name, profilePic, PhoneNumber
-    const user = await User.findOne({ PhoneNumber }).select("name profilePic PhoneNumber");
+    const user = await User.findOne({ PhoneNumber }).select(
+      "name profilePic PhoneNumber",
+    );
 
     if (!user) {
       return res.status(404).json({
@@ -704,38 +806,49 @@ router.get("/user-info/:PhoneNumber", async (req, res) => {
   }
 });
 
-
 //  Serve uploaded files publicly
 router.use("/uploads", express.static(uploadDir));
-
 
 router.get("/", (req, res) => {
   res.send(" LinkApp backend is live and ready!");
 });
 
-
 // notification token save route
-router.post("/save-token", async (req, res) => {
+router.post("/save-token", authMiddleware, async (req, res) => {
   try {
     const { phoneNumber, expoPushToken } = req.body;
 
     if (!phoneNumber || !expoPushToken) {
-      return res.status(400).json({ success: false, message: "Phone number and expo token are required" });
+      return res.status(400).json({
+        success: false,
+        message: "Phone number and expo token are required",
+      });
     }
 
-    if (!Expo.isExpoPushToken(expoPushToken)) {
-      return res.status(400).json({ success: false, message: "Invalid Expo push token" });
+    const normalizedToken = expoPushToken.trim();
+    if (!Expo.isExpoPushToken(normalizedToken)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid Expo push token" });
     }
 
-    const user = await User.findOneAndUpdate(
-      { PhoneNumber: phoneNumber },
-      { expoPushToken: expoPushToken.trim() },
-      { new: true }
+    const authenticatedUser = await User.findById(req.userId).select(
+      "PhoneNumber",
     );
-
-    if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+    if (!authenticatedUser || authenticatedUser.PhoneNumber !== phoneNumber) {
+      return res.status(403).json({
+        success: false,
+        message: "Phone number does not match the authenticated user",
+      });
     }
+
+    await User.updateOne(
+      { _id: req.userId },
+      {
+        $set: { expoPushToken: normalizedToken },
+        $addToSet: { expoPushTokens: normalizedToken },
+      },
+    );
 
     res.json({ success: true, message: "Expo token saved" });
   } catch (err) {
@@ -745,18 +858,41 @@ router.post("/save-token", async (req, res) => {
 });
 
 // send push notification
-router.post('/send-notification', async (req, res) => {
+router.post("/send-notification", authMiddleware, async (req, res) => {
   try {
     const { token, title, body, data } = req.body;
 
     if (!token) {
-      return res.status(400).json({ success: false, message: "Expo token is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Expo token is required" });
     }
 
-    const result = await sendExpoNotification(token, title || "New notification", body || "You have a new notification", data || {});
+    const user = await User.findById(req.userId).select(
+      "expoPushToken expoPushTokens",
+    );
+    const registeredTokens = user
+      ? [...(user.expoPushTokens || []), user.expoPushToken].filter(Boolean)
+      : [];
+    if (!registeredTokens.includes(token)) {
+      return res.status(403).json({
+        success: false,
+        message: "Token is not registered to the authenticated user",
+      });
+    }
+
+    const result = await sendExpoNotification(
+      token,
+      title || "New notification",
+      body || "You have a new notification",
+      data || {},
+    );
 
     if (!result.success) {
-      return res.status(400).json({ success: false, message: result.reason || "Push notification failed" });
+      return res.status(400).json({
+        success: false,
+        message: result.reason || "Push notification failed",
+      });
     }
 
     res.json({ success: true, result });
