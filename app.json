@@ -1,5 +1,10 @@
 {
   "android": {
     "package": "com.iddrisu_alhassan.backend"
+  },
+  "extra": {
+    "eas": {
+      "projectId": "0cbc48c3-4e72-4a1c-b95c-d41ab8162607"
+    }
   }
 }

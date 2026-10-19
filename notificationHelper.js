@@ -102,6 +102,7 @@ const sendExpoNotification = async (tokens, title, body, data = {}) => {
       title,
       body,
       data,
+      channelId: "default",
     }));
 
     for (const chunk of expo.chunkPushNotifications(messages)) {

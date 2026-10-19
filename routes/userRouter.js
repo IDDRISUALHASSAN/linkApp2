@@ -814,7 +814,9 @@ router.get("/", (req, res) => {
 });
 
 // notification token save route
-router.post("/save-token", authMiddleware, async (req, res) => {
+// Uses PhoneNumber (not JWT auth) so tokens can be registered even before
+// the JWT is available in AsyncStorage, e.g. on first app open.
+router.post("/save-token", async (req, res) => {
   try {
     const { phoneNumber, expoPushToken } = req.body;
 
@@ -832,23 +834,20 @@ router.post("/save-token", authMiddleware, async (req, res) => {
         .json({ success: false, message: "Invalid Expo push token" });
     }
 
-    const authenticatedUser = await User.findById(req.userId).select(
-      "PhoneNumber",
-    );
-    if (!authenticatedUser || authenticatedUser.PhoneNumber !== phoneNumber) {
-      return res.status(403).json({
-        success: false,
-        message: "Phone number does not match the authenticated user",
-      });
+    const user = await User.findOne({ PhoneNumber: phoneNumber });
+    if (!user) {
+      console.warn(`[Token] No user found for PhoneNumber: ${phoneNumber}`);
+      return res.status(404).json({ success: false, message: "User not found" });
     }
 
     await User.updateOne(
-      { _id: req.userId },
+      { PhoneNumber: phoneNumber },
       {
         $set: { expoPushToken: normalizedToken },
         $addToSet: { expoPushTokens: normalizedToken },
       },
     );
+    console.log(`[Token] Push token saved for ${phoneNumber}`);
 
     res.json({ success: true, message: "Expo token saved" });
   } catch (err) {
