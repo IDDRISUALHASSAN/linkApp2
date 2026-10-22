@@ -11,6 +11,9 @@ require("dotenv").config();
 const { Server } = require("socket.io");
 
 const userRouter = require("./routes/userRouter");
+const videoRouter = require("./routes/videoRouter");
+const followRouter = require("./routes/followRouter");
+const notificationRouter = require("./routes/notificationRouter");
 const Message = require("./model/message");
 const User = require("./model/user");
 const { sendExpoNotification } = require("./notificationHelper");
@@ -43,6 +46,9 @@ app.use("/uploads", express.static(uploadDir));
 
 // Mount your routes
 app.use("/", userRouter);
+app.use("/", videoRouter);
+app.use("/", followRouter);
+app.use("/", notificationRouter);
 
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
