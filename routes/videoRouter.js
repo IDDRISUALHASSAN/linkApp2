@@ -57,47 +57,4 @@ router.get(
 
 router.get("/music", auth, generalLimiter, videoController.getMusic);
 
-// Comments
-router.post(
-  "/videos/:id/comments",
-  auth,
-  rateLimit(60 * 1000, 20),
-  require("../controllers/commentController").addComment,
-);
-
-router.get(
-  "/videos/:id/comments",
-  auth,
-  generalLimiter,
-  require("../controllers/commentController").getComments,
-);
-
-router.get(
-  "/comments/:id/replies",
-  auth,
-  generalLimiter,
-  require("../controllers/commentController").getReplies,
-);
-
-router.patch(
-  "/comments/:id",
-  auth,
-  rateLimit(60 * 1000, 20),
-  require("../controllers/commentController").editComment,
-);
-
-router.delete(
-  "/comments/:id",
-  auth,
-  rateLimit(60 * 1000, 10),
-  require("../controllers/commentController").deleteComment,
-);
-
-router.post(
-  "/comments/:id/like",
-  auth,
-  likeLimiter,
-  require("../controllers/commentController").toggleCommentLike,
-);
-
 module.exports = router;
