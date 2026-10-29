@@ -104,7 +104,7 @@ exports.getFollowers = async (req, res) => {
     const result = hasNextPage ? docs.slice(0, -1) : docs;
 
     const enriched = result.map((d) => {
-      const doc = d.toObject();
+      const doc = { ...d };
       doc.isFollowing = doc.follower
         ? doc.follower._id.toString() === userId.toString()
         : false;
@@ -155,7 +155,7 @@ exports.getFollowing = async (req, res) => {
     const result = hasNextPage ? docs.slice(0, -1) : docs;
 
     const enriched = result.map((d) => {
-      const doc = d.toObject();
+      const doc = { ...d };
       doc.isFollowing = doc.following
         ? doc.following._id.toString() === userId.toString()
         : false;
@@ -205,7 +205,7 @@ exports.getUserProfile = async (req, res) => {
       Follow.findOne({ follower: userId, following: targetId }).lean(),
     ]);
 
-    const doc = target.toObject();
+    const doc = { ...target };
     doc.followersCount = followersCount;
     doc.followingCount = followingCount;
     doc.isFollowing = !!followDoc;

@@ -34,6 +34,13 @@ router.post(
   videoController.toggleLike,
 );
 
+router.delete(
+  "/videos/:id/like",
+  auth,
+  likeLimiter,
+  videoController.toggleLike,
+);
+
 router.post(
   "/videos/:id/share",
   auth,

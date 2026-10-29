@@ -143,7 +143,7 @@ exports.getComments = async (req, res) => {
 
     const enriched = await Promise.all(
       result.map(async (c) => {
-        const doc = c.toObject();
+        const doc = { ...c };
         doc.isLiked = c.likes.some(
           (l) => l && l.toString() === userId.toString(),
         );
@@ -202,7 +202,7 @@ exports.getReplies = async (req, res) => {
     const result = hasNextPage ? replies.slice(0, -1) : replies;
 
     const enriched = result.map((r) => {
-      const doc = r.toObject();
+      const doc = { ...r };
       doc.isLiked = r.likes.some(
         (l) => l && l.toString() === userId.toString(),
       );
