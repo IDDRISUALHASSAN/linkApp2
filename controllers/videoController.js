@@ -194,6 +194,132 @@ exports.uploadVideo = [
   },
 ];
 
+exports.randomFeed = async (req, res) => {
+  try {
+    const userId = req.userId;
+    const exclude = Array.isArray(req.body?.exclude)
+      ? req.body.exclude
+          .filter((id) => isValidObjectId(id))
+          .slice(0, 200)
+          .map((id) => new mongoose.Types.ObjectId(id))
+      : [];
+    const limit = Math.min(Math.max(parseInt(req.body?.limit) || 10, 1), 20);
+
+    const matchStage =
+      exclude.length > 0 ? { _id: { $nin: exclude } } : {};
+
+    let pipeline = [
+      { $match: matchStage },
+      { $sample: { size: limit } },
+      {
+        $lookup: {
+          from: "users",
+          let: { userId: "$user" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$_id", "$$userId"] } } },
+            { $project: { _id: 1, name: 1, profilePic: 1 } },
+          ],
+          as: "user",
+        },
+      },
+      { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+      {
+        $lookup: {
+          from: "musics",
+          let: { musicId: "$musicId" },
+          pipeline: [
+            { $match: { $expr: { $eq: ["$_id", "$$musicId"] } } },
+            { $project: { _id: 1, title: 1, artist: 1 } },
+          ],
+          as: "musicId",
+        },
+      },
+      { $unwind: { path: "$musicId", preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          isLiked: {
+            $cond: {
+              if: { $in: [new mongoose.Types.ObjectId(userId), "$likes"] },
+              then: true,
+              else: false,
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          __v: 0,
+          likes: 0,
+        },
+      },
+    ];
+
+    let results = await Video.aggregate(pipeline);
+
+    let reshuffled = false;
+    if (results.length < limit) {
+      const fillPipeline = [
+        { $sample: { size: limit - results.length } },
+        {
+          $lookup: {
+            from: "users",
+            let: { userId: "$user" },
+            pipeline: [
+              { $match: { $expr: { $eq: ["$_id", "$$userId"] } } },
+              { $project: { _id: 1, name: 1, profilePic: 1 } },
+            ],
+            as: "user",
+          },
+        },
+        { $unwind: { path: "$user", preserveNullAndEmptyArrays: true } },
+        {
+          $lookup: {
+            from: "musics",
+            let: { musicId: "$musicId" },
+            pipeline: [
+              { $match: { $expr: { $eq: ["$_id", "$$musicId"] } } },
+              { $project: { _id: 1, title: 1, artist: 1 } },
+            ],
+            as: "musicId",
+          },
+        },
+        { $unwind: { path: "$musicId", preserveNullAndEmptyArrays: true } },
+        { $addFields: { isLiked: { $cond: { if: { $in: [new mongoose.Types.ObjectId(userId), "$likes"] }, then: true, else: false } } } },
+        { $project: { __v: 0, likes: 0 } },
+      ];
+
+      const fillResults = await Video.aggregate(fillPipeline);
+      results = [...results, ...fillResults];
+      reshuffled = true;
+    }
+
+    const enriched = await Promise.all(
+      results.map(async (doc) => {
+        if (doc.user && doc.user._id) {
+          const Follow = require("../model/follow");
+          const followDoc = await Follow.findOne({
+            follower: userId,
+            following: doc.user._id,
+          }).lean();
+          doc.isFollowing = !!followDoc;
+        }
+        return doc;
+      }),
+    );
+
+    res.json({
+      success: true,
+      videos: enriched,
+      nextCursor: null,
+      hasNextPage: true,
+      reshuffled,
+    });
+  } catch (err) {
+    console.error("Random feed error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+};
+
 exports.getFeed = async (req, res) => {
   try {
     const userId = req.userId;

@@ -17,6 +17,7 @@ router.post(
 );
 
 router.get("/videos", auth, generalLimiter, videoController.getFeed);
+router.post("/videos/feed", auth, generalLimiter, videoController.randomFeed);
 router.get("/videos/:id", auth, generalLimiter, videoController.getVideo);
 router.get("/users/:id/videos", auth, generalLimiter, videoController.getUserVideos);
 
