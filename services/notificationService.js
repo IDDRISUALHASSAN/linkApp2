@@ -20,7 +20,7 @@ const buildNotificationBody = (type, text) => {
     case "comment_like":
       return "liked your comment";
     case "follow":
-      return "followed you";
+      return "started following you";
     default:
       return "";
   }
@@ -101,7 +101,12 @@ const createAndSendNotification = async ({
   if (tokens.length > 0) {
     const title = buildNotificationTitle(sender?.name);
     const body = buildNotificationBody(type, text);
-    const data = { type, videoId: videoId?.toString(), commentId: commentId?.toString() };
+     const data = {
+    type,
+    userId: senderId?.toString(),
+    videoId: videoId?.toString(),
+    commentId: commentId?.toString(),
+  };
     const result = await sendExpoNotification(tokens, title, body, data);
     console.log(`[Push] ${type} notification to ${recipientId}:`, result);
   }

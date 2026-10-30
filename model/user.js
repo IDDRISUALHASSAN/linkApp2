@@ -15,9 +15,11 @@ const userSchema = new mongoose.Schema(
     expoPushTokens: { type: [String], default: [] },
     profilePic: { type: String, default: "" },
     experience: { type: String, default: "" },
-    skills: { type: [String], default: [] },
-  },
-  { timestamps: true },
+     skills: { type: [String], default: [] },
+     followersCount: { type: Number, default: 0 },
+     followingCount: { type: Number, default: 0 },
+   },
+   { timestamps: true },
 );
 
 module.exports = mongoose.model("User", userSchema);

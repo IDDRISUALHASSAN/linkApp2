@@ -43,4 +43,11 @@ router.get(
   followController.getUserProfile,
 );
 
+router.get(
+  "/feed/following",
+  auth,
+  generalLimiter,
+  followController.getFollowingFeed,
+);
+
 module.exports = router;

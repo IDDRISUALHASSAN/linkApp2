@@ -163,13 +163,17 @@ exports.uploadVideo = [
       });
 
       const fullVideo = await Video.findById(video._id)
-        .populate("user", "name profilePic")
+        .populate("user", "_id name profilePic")
         .populate("musicId", "title artist");
+
+      const doc = fullVideo.toObject();
+      doc.isLiked = false;
+      doc.isFollowing = false;
 
       res.status(201).json({
         success: true,
         message: "Video uploaded successfully",
-        video: fullVideo,
+        video: doc,
       });
     } catch (err) {
       console.error("Upload video error:", err);
@@ -293,19 +297,29 @@ exports.randomFeed = async (req, res) => {
       reshuffled = true;
     }
 
-    const enriched = await Promise.all(
-      results.map(async (doc) => {
-        if (doc.user && doc.user._id) {
-          const Follow = require("../model/follow");
-          const followDoc = await Follow.findOne({
-            follower: userId,
-            following: doc.user._id,
-          }).lean();
-          doc.isFollowing = !!followDoc;
-        }
-        return doc;
-      }),
+    const Follow = require("../model/follow");
+    const uploaderIds = results
+      .filter((doc) => doc.user && doc.user._id)
+      .map((doc) => doc.user._id);
+    const followMap = await Follow.find({
+      follower: userId,
+      following: { $in: uploaderIds },
+    })
+      .select("following")
+      .lean();
+
+    const followingUploaderIds = new Set(
+      followMap.map((f) => f.following.toString()),
     );
+
+    const enriched = results.map((doc) => {
+      if (doc.user && doc.user._id) {
+        doc.isFollowing = followingUploaderIds.has(doc.user._id.toString());
+      } else {
+        doc.isFollowing = false;
+      }
+      return doc;
+    });
 
     res.json({
       success: true,
@@ -340,24 +354,33 @@ exports.getFeed = async (req, res) => {
     const hasNextPage = videos.length > limit;
     const result = hasNextPage ? videos.slice(0, -1) : videos;
 
-    const enriched = await Promise.all(
-      result.map(async (v) => {
-        const doc = v.toObject();
-        doc.isLiked = v.likes.some(
-          (l) => l.toString() === userId.toString(),
-        );
-        const uploader = doc.user;
-        if (uploader && uploader._id) {
-          const Follow = require("../model/follow");
-          const followDoc = await Follow.findOne({
-            follower: userId,
-            following: uploader._id,
-          }).lean();
-          doc.isFollowing = !!followDoc;
-        }
-        return doc;
-      }),
+    const Follow = require("../model/follow");
+    const uploaderIds = result
+      .filter((v) => v.user && v.user._id)
+      .map((v) => v.user._id);
+    const followMap = await Follow.find({
+      follower: userId,
+      following: { $in: uploaderIds },
+    })
+      .select("following")
+      .lean();
+
+    const followingUploaderIds = new Set(
+      followMap.map((f) => f.following.toString()),
     );
+
+    const enriched = result.map((v) => {
+      const doc = v.toObject();
+      doc.isLiked = v.likes.some(
+        (l) => l.toString() === userId.toString(),
+      );
+      doc.isFollowing = Boolean(
+        doc.user &&
+          doc.user._id &&
+          followingUploaderIds.has(doc.user._id.toString()),
+      );
+      return doc;
+    });
 
     const nextCursor = hasNextPage
       ? result[result.length - 1]?.createdAt?.toISOString()
@@ -402,9 +425,29 @@ exports.getUserVideos = async (req, res) => {
     const hasNextPage = videos.length > limit;
     const result = hasNextPage ? videos.slice(0, -1) : videos;
 
+    const Follow = require("../model/follow");
+    const uploaderIds = result
+      .filter((v) => v.user && v.user._id)
+      .map((v) => v.user._id);
+    const followMap = await Follow.find({
+      follower: userId,
+      following: { $in: uploaderIds },
+    })
+      .select("following")
+      .lean();
+
+    const followingUploaderIds = new Set(
+      followMap.map((f) => f.following.toString()),
+    );
+
     const enriched = result.map((v) => {
       const doc = v.toObject();
       doc.isLiked = v.likes.some((l) => l.toString() === userId.toString());
+      doc.isFollowing = Boolean(
+        doc.user &&
+          doc.user._id &&
+          followingUploaderIds.has(doc.user._id.toString()),
+      );
       return doc;
     });
 
@@ -447,6 +490,13 @@ exports.getVideo = async (req, res) => {
 
     const doc = video.toObject();
     doc.isLiked = video.likes.some((l) => l.toString() === userId.toString());
+
+    const Follow = require("../model/follow");
+    const followDoc = await Follow.findOne({
+      follower: userId,
+      following: video.user._id,
+    }).lean();
+    doc.isFollowing = !!followDoc;
 
     res.json({ success: true, video: doc });
   } catch (err) {
