@@ -8,6 +8,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const cloudinary = require("./../cloudinary");
+const rateLimit = require("../middleware/rateLimit");
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
 const message = require("../model/message");
 const { time } = require("console");
@@ -664,6 +665,8 @@ router.post(
         fileType: req.file.mimetype,
         fileName: req.file.originalname,
         fileSize: req.file.size,
+        cloudinaryPublicId: uploadResult.public_id,
+        cloudinaryResourceType: uploadResult.resource_type,
       });
 
       await newMessage.save();
@@ -735,6 +738,62 @@ router.post(
         success: false,
         message: err.message || "Server error while uploading file",
       });
+    }
+  },
+);
+
+// GET /messages/:messageId/download — generate a proper Cloudinary download URL
+router.get(
+  "/messages/:messageId/download",
+  authMiddleware,
+  rateLimit(60 * 1000, 60),
+  async (req, res) => {
+    try {
+      const { messageId } = req.params;
+      const userId = req.userId;
+
+      if (!messageId)
+        return res
+          .status(400)
+          .json({ success: false, message: "Message ID is required" });
+
+      const message = await Message.findById(messageId);
+      if (!message)
+        return res
+          .status(404)
+          .json({ success: false, message: "Message not found" });
+
+      if (
+        message.from !== userId &&
+        message.to !== userId
+      ) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Unauthorized" });
+      }
+
+      if (!message.fileUrl || !message.cloudinaryPublicId)
+        return res
+          .status(404)
+          .json({ success: false, message: "File not found" });
+
+      const resourceType =
+        message.cloudinaryResourceType || "auto";
+
+      const downloadUrl = cloudinary.url(message.cloudinaryPublicId, {
+        resource_type: resourceType,
+        flags: "attachment",
+      });
+
+      res.json({
+        success: true,
+        downloadUrl,
+        fileName: message.fileName || "download",
+        fileType: message.fileType || "",
+      });
+    } catch (err) {
+      console.error("Download file error:", err);
+      res.status(500).json({ success: false, message: "Server error" });
     }
   },
 );
