@@ -650,10 +650,12 @@ router.post(
 
       const resourceType = req.file.mimetype === "application/pdf" ? "raw" : "auto";
 
-      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-        folder: "user_uploads/files",
-        resource_type: resourceType,
-      });
+const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+  folder: "user_uploads/files",
+  resource_type: resourceType,
+  access_mode: "public",
+  type: "upload",
+});
 
       fs.unlinkSync(req.file.path);
 
