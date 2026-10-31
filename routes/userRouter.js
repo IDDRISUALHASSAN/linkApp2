@@ -647,7 +647,7 @@ router.post(
           .status(400)
           .json({ success: false, message: "File is required" });
 
-      const resourceType = "auto";
+      const resourceType = req.file.mimetype === "application/pdf" ? "raw" : "auto";
 
       const uploadResult = await cloudinary.uploader.upload(req.file.path, {
         folder: "user_uploads/files",
@@ -662,6 +662,8 @@ router.post(
         text: text || "",
         fileUrl: uploadResult.secure_url,
         fileType: req.file.mimetype,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
       });
 
       await newMessage.save();

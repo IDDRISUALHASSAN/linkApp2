@@ -188,6 +188,37 @@ io.on("connection", (socket) => {
     socket.emit("messageSent", msg);
   });
 
+  socket.on("likeMessage", async ({ messageId, userId, phoneNumber }) => {
+    if (!messageId || !userId) return;
+    try {
+      const msg = await Message.findById(messageId);
+      if (!msg) return;
+
+      const userIdStr = userId.toString();
+      const alreadyLiked = msg.likes.some((l) => l.toString() === userIdStr);
+
+      if (alreadyLiked) {
+        msg.likes = msg.likes.filter((l) => l.toString() !== userIdStr);
+        msg.likesCount = Math.max(0, msg.likesCount - 1);
+      } else {
+        msg.likes.push(userId);
+        msg.likesCount += 1;
+      }
+      await msg.save();
+
+      const payload = {
+        messageId,
+        userId,
+        liked: !alreadyLiked,
+        likesCount: msg.likesCount,
+      };
+      io.to(String(msg.from)).emit("messageLikeUpdate", payload);
+      io.to(String(msg.to)).emit("messageLikeUpdate", payload);
+    } catch (err) {
+      console.error("Like message error:", err);
+    }
+  });
+
   socket.on("loadHistory", async ({ from, to }) => {
     if (!from || !to) return;
     try {
