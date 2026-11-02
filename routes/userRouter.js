@@ -648,14 +648,19 @@ router.post(
           .status(400)
           .json({ success: false, message: "File is required" });
 
-      const resourceType = req.file.mimetype === "application/pdf" ? "raw" : "auto";
+      const resourceType =
+        req.file.mimetype.startsWith("image/")
+          ? "image"
+          : req.file.mimetype.startsWith("video/")
+          ? "video"
+          : "raw";
 
-const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-  folder: "user_uploads/files",
-  resource_type: resourceType,
-  access_mode: "public",
-  type: "upload",
-});
+      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+        folder: "user_uploads/files",
+        resource_type: resourceType,
+        access_mode: "public",
+        type: "upload",
+      });
 
       fs.unlinkSync(req.file.path);
 
