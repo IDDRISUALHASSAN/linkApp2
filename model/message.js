@@ -12,6 +12,8 @@ const messageSchema = new mongoose.Schema(
     fileSize: { type: Number },
     cloudinaryPublicId: { type: String },
     cloudinaryResourceType: { type: String },
+    cloudinaryPublicId: { type: String },
+    cloudinaryResourceType: { type: String },
     likes: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     likesCount: { type: Number, default: 0 },
   },

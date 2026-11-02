@@ -673,7 +673,7 @@ router.post(
         fileName: req.file.originalname,
         fileSize: req.file.size,
         cloudinaryPublicId: uploadResult.public_id,
-        cloudinaryResourceType: uploadResult.resource_type,
+        cloudinaryResourceType: resourceType,
       });
 
       await newMessage.save();
@@ -779,18 +779,45 @@ router.get(
           .json({ success: false, message: "Unauthorized" });
       }
 
-      if (!message.fileUrl || !message.cloudinaryPublicId)
+      if (!message.fileUrl)
         return res
           .status(404)
           .json({ success: false, message: "File not found" });
 
-      const resourceType =
-        message.cloudinaryResourceType || "auto";
+      // Get public ID from stored field or extract from URL
+      let publicId = message.cloudinaryPublicId;
+      let resourceType = message.cloudinaryResourceType || "auto";
 
-      const downloadUrl = cloudinary.url(message.cloudinaryPublicId, {
-        resource_type: resourceType,
-        flags: "attachment",
-      });
+      if (!publicId) {
+        // Extract from URL: https://res.cloudinary.com/{cloud}/raw/upload/v{version}/{publicId}.{ext}
+        const urlMatch = message.fileUrl.match(
+          /\/(image|video|raw)\/upload\/(?:v\d+\/)?(.+?)(?:\.[^.]+)?$/,
+        );
+        if (urlMatch) {
+          resourceType = urlMatch[1];
+          publicId = urlMatch[2];
+        }
+      }
+
+      if (!publicId) {
+        return res
+          .status(404)
+          .json({ success: false, message: "File not found" });
+      }
+
+      // Determine format from fileName or fileUrl
+      const fileName = message.fileName || message.fileUrl.split("/").pop();
+      const format = fileName.split(".").pop() || "";
+
+      // Generate signed download URL using Cloudinary's private_download_url
+      const downloadUrl = cloudinary.utils.private_download_url(
+        publicId,
+        format,
+        {
+          resource_type: resourceType,
+          expires_at: Math.floor(Date.now() / 1000) + 3600,
+        },
+      );
 
       res.json({
         success: true,
