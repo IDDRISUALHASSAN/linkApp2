@@ -805,17 +805,19 @@ router.get(
           .json({ success: false, message: "File not found" });
       }
 
-      // Determine format from fileName or fileUrl
+      // Use the admin-authenticated download API with type: "upload" — this
+      // works for resource_type raw (PDF, ZIP, etc.) and bypasses the free-plan
+      // PDF/archive delivery block, because delivery happens over an
+      // authenticated API request rather than a public CDN URL.
       const fileName = message.fileName || message.fileUrl.split("/").pop();
-      const format = fileName.split(".").pop() || "";
-
-      // Generate signed download URL using Cloudinary's private_download_url
       const downloadUrl = cloudinary.utils.private_download_url(
         publicId,
-        format,
+        fileName.split(".").pop() || "pdf",
         {
-          resource_type: resourceType,
+          resource_type: resourceType === "auto" ? "raw" : resourceType,
+          type: "upload",
           expires_at: Math.floor(Date.now() / 1000) + 3600,
+          attachment: true,
         },
       );
 
