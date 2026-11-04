@@ -373,7 +373,7 @@ router.post("/verify-reset-otp", async (req, res) => {
 router.get("/profile", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.userId).select(
-      "name PhoneNumber profilePic online",
+      "name PhoneNumber profilePic online lastSeen",
     );
     if (!user) {
       return res
@@ -471,6 +471,7 @@ router.get("/conversations/:phone", async (req, res) => {
         $addFields: {
           name: { $arrayElemAt: ["$user.name", 0] },
           online: { $arrayElemAt: ["$user.online", 0] },
+          lastSeen: { $arrayElemAt: ["$user.lastSeen", 0] },
         },
       },
       { $addFields: { profilePic: { $arrayElemAt: ["$user.profilePic", 0] } } },
@@ -480,6 +481,7 @@ router.get("/conversations/:phone", async (req, res) => {
           phone: "$_id",
           name: 1,
           online: 1,
+          lastSeen: 1,
           lastMessage: 1,
           lastMessageHasFile: 1,
           lastAt: 1,
@@ -553,19 +555,23 @@ router.post(
 );
 
 // 🔹 Mark messages as read
-router.post("/messages/mark-read", async (req, res) => {
+router.post("/messages/mark-read", authMiddleware, async (req, res) => {
   try {
-    const { from, to } = req.body;
+    const { from } = req.body;
 
-    if (!from || !to) {
+    if (!from) {
       return res
         .status(400)
-        .json({ success: false, message: "Missing fields" });
+        .json({ success: false, message: "Sender is required" });
     }
 
-    // Update all unread messages where sender = from and receiver = to
+    const user = await User.findById(req.userId).select("PhoneNumber");
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
     const result = await Message.updateMany(
-      { from: from, to: to, read: false },
+      { from, to: user.PhoneNumber, read: false },
       { $set: { read: true } },
     );
 
@@ -866,7 +872,7 @@ router.post("/users", async (req, res) => {
     //  Match the exact DB field: PhoneNumber (with uppercase P)
     const users = await User.find(
       { PhoneNumber: { $in: cleanedNumbers } },
-      "name PhoneNumber online profilePic",
+      "name PhoneNumber online lastSeen profilePic",
     );
 
     console.log(" Found users:", users.length);
@@ -891,7 +897,7 @@ router.get("/user-info/:PhoneNumber", async (req, res) => {
 
     // Only select what you need — name, profilePic, PhoneNumber
     const user = await User.findOne({ PhoneNumber }).select(
-      "name profilePic PhoneNumber",
+      "name profilePic PhoneNumber online lastSeen",
     );
 
     if (!user) {

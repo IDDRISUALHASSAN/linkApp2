@@ -11,6 +11,7 @@ const userSchema = new mongoose.Schema(
     lastOtpSent: { type: Date },
     isVerified: { type: Boolean, default: false },
     online: { type: Boolean, default: false },
+    lastSeen: { type: Date, default: null },
     expoPushToken: { type: String, default: "" },
     expoPushTokens: { type: [String], default: [] },
     profilePic: { type: String, default: "" },

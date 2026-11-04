@@ -64,8 +64,10 @@ const io = new Server(server, {
 //attached globally
 app.set("io", io);
 
-// Online users map (phoneNumber -> socket.id)
+// Online users map (phoneNumber -> primary socket.id), retained for route compatibility.
 let onlineUsers = {};
+const userSockets = new Map();
+const socketUsers = new Map();
 // App foreground state per phone number ("active" | "background")
 let appState = {};
 // Which conversation each phone number is actively viewing (phoneNumber -> chatPartner)
@@ -76,13 +78,33 @@ app.set("activeChats", activeChats);
 
 const setUserOnlineStatus = async (phoneNumber, status) => {
   try {
-    await User.findOneAndUpdate(
+    return await User.findOneAndUpdate(
       { PhoneNumber: phoneNumber },
-      { online: status },
-      { new: true },
+      {
+        $set: {
+          online: status,
+          ...(status ? {} : { lastSeen: new Date() }),
+        },
+      },
+      { new: true, select: "lastSeen" },
     );
   } catch (err) {
     console.error("Error updating user status:", err);
+    return null;
+  }
+};
+
+const emitToUser = (phoneNumber, event, payload) => {
+  const sockets = userSockets.get(phoneNumber);
+  if (sockets) {
+    for (const socketId of sockets) {
+      io.to(socketId).emit(event, payload);
+    }
+    return;
+  }
+
+  if (onlineUsers[phoneNumber]) {
+    io.to(onlineUsers[phoneNumber]).emit(event, payload);
   }
 };
 
@@ -90,12 +112,48 @@ io.on("connection", (socket) => {
   console.log("Socket connected:", socket.id);
 
   socket.on("login", async (phoneNumber) => {
-    if (!phoneNumber) return;
+    if (typeof phoneNumber !== "string" || !phoneNumber.trim()) return;
+    phoneNumber = phoneNumber.trim();
+
+    const previousPhone = socketUsers.get(socket.id);
+    if (previousPhone && previousPhone !== phoneNumber) {
+      const previousSockets = userSockets.get(previousPhone);
+      previousSockets?.delete(socket.id);
+      if (previousSockets?.size) {
+        onlineUsers[previousPhone] = previousSockets.values().next().value;
+      } else {
+        userSockets.delete(previousPhone);
+        delete onlineUsers[previousPhone];
+        delete appState[previousPhone];
+        delete activeChats[previousPhone];
+        const lastSeenUser = await setUserOnlineStatus(previousPhone, false);
+        const previousPresence = {
+          phoneNumber: previousPhone,
+          online: false,
+          lastSeen: lastSeenUser?.lastSeen || new Date(),
+        };
+        socket.broadcast.emit("userOffline", previousPhone);
+        socket.broadcast.emit("presenceUpdate", previousPresence);
+      }
+    }
+
+    const sockets = userSockets.get(phoneNumber) || new Set();
+    const wasOffline = sockets.size === 0;
+    sockets.add(socket.id);
+    userSockets.set(phoneNumber, sockets);
+    socketUsers.set(socket.id, phoneNumber);
     onlineUsers[phoneNumber] = socket.id;
     appState[phoneNumber] = "active";
     console.log(`${phoneNumber} logged in`);
-    await setUserOnlineStatus(phoneNumber, true);
-    socket.broadcast.emit("userOnline", phoneNumber);
+    const user = await setUserOnlineStatus(phoneNumber, true);
+    if (wasOffline) {
+      socket.broadcast.emit("userOnline", phoneNumber);
+      socket.broadcast.emit("presenceUpdate", {
+        phoneNumber,
+        online: true,
+        lastSeen: user?.lastSeen || null,
+      });
+    }
   });
 
   socket.on("appState", ({ phoneNumber, state }) => {
@@ -134,8 +192,8 @@ io.on("connection", (socket) => {
 
     // Deliver in real time via Socket.IO when the recipient has a connected socket
     if (onlineUsers[to]) {
-      io.to(onlineUsers[to]).emit("message", msg);
-      io.to(onlineUsers[to]).emit("notification", {
+      emitToUser(to, "message", msg);
+      emitToUser(to, "notification", {
         from,
         message: trimmedText,
         time: Date.now(),
@@ -236,14 +294,19 @@ io.on("connection", (socket) => {
   });
 
   socket.on("typing", ({ from, to, isTyping }) => {
+    if (typeof from !== "string" || typeof to !== "string") return;
+    if (socketUsers.has(socket.id) && socketUsers.get(socket.id) !== from) return;
     if (onlineUsers[to]) {
-      io.to(onlineUsers[to]).emit("typing", { from, isTyping });
+      emitToUser(to, "typing", { from, isTyping: Boolean(isTyping) });
     }
   });
 
   socket.on("stopTyping", ({ from, to }) => {
+    if (typeof from !== "string" || typeof to !== "string") return;
+    if (socketUsers.has(socket.id) && socketUsers.get(socket.id) !== from) return;
     if (onlineUsers[to]) {
-      io.to(onlineUsers[to]).emit("stopTyping", { from });
+      emitToUser(to, "stopTyping", { from });
+      emitToUser(to, "typing", { from, isTyping: false });
     }
   });
 
@@ -254,15 +317,28 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", async () => {
     console.log("Socket disconnected:", socket.id);
-    const phone = Object.keys(onlineUsers).find(
-      (key) => onlineUsers[key] === socket.id,
-    );
+    const phone = socketUsers.get(socket.id);
+    socketUsers.delete(socket.id);
     if (phone) {
-      delete onlineUsers[phone];
-      delete appState[phone];
-      delete activeChats[phone];
-      await setUserOnlineStatus(phone, false);
-      socket.broadcast.emit("userOffline", phone);
+      const sockets = userSockets.get(phone);
+      sockets?.delete(socket.id);
+
+      if (!sockets?.size) {
+        userSockets.delete(phone);
+        delete onlineUsers[phone];
+        delete appState[phone];
+        delete activeChats[phone];
+        const user = await setUserOnlineStatus(phone, false);
+        const presence = {
+          phoneNumber: phone,
+          online: false,
+          lastSeen: user?.lastSeen || new Date(),
+        };
+        socket.broadcast.emit("userOffline", phone);
+        socket.broadcast.emit("presenceUpdate", presence);
+      } else if (onlineUsers[phone] === socket.id) {
+        onlineUsers[phone] = sockets.values().next().value;
+      }
     }
   });
 });

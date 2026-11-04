@@ -6,7 +6,7 @@ const { createAndSendNotification } = require("../services/notificationService")
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
 
-const USER_PUBLIC_FIELDS = "_id name profilePic online";
+const USER_PUBLIC_FIELDS = "_id name profilePic online lastSeen";
 
 /**
  * POST /users/:id/follow
@@ -237,6 +237,8 @@ exports.getFollowers = async (req, res) => {
         _id: _id,
         name: user.name || "",
         profilePic: user.profilePic || "",
+        online: Boolean(user.online),
+        lastSeen: user.lastSeen || null,
         isFollowing: Boolean(_id && followingThem.has(_id.toString())),
         isMe: _id ? _id.toString() === requesterId.toString() : false,
       };
@@ -310,6 +312,8 @@ exports.getFollowing = async (req, res) => {
         _id: _id,
         name: user.name || "",
         profilePic: user.profilePic || "",
+        online: Boolean(user.online),
+        lastSeen: user.lastSeen || null,
         isFollowing: Boolean(_id && followingThem.has(_id.toString())),
         isMe: _id ? _id.toString() === requesterId.toString() : false,
       };
@@ -349,7 +353,7 @@ exports.getUserProfile = async (req, res) => {
 
     const [target, followDoc] = await Promise.all([
       User.findById(targetId)
-        .select("_id name profilePic followersCount followingCount")
+        .select("_id name profilePic online lastSeen followersCount followingCount")
         .lean(),
       Follow.findOne({ follower: userId, following: targetId }).lean(),
     ]);
@@ -376,6 +380,8 @@ exports.getUserProfile = async (req, res) => {
         _id: target._id,
         name: target.name,
         profilePic: target.profilePic,
+        online: target.online,
+        lastSeen: target.lastSeen,
         followersCount: target.followersCount ?? 0,
         followingCount: target.followingCount ?? 0,
         videosCount,
