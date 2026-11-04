@@ -770,9 +770,15 @@ router.get(
           .status(404)
           .json({ success: false, message: "Message not found" });
 
+      const user = await User.findById(userId).select("PhoneNumber");
+      if (!user)
+        return res
+          .status(404)
+          .json({ success: false, message: "User not found" });
+
       if (
-        message.from !== userId &&
-        message.to !== userId
+        message.from !== user.PhoneNumber &&
+        message.to !== user.PhoneNumber
       ) {
         return res
           .status(403)
