@@ -441,6 +441,11 @@ router.get("/conversations/:phone", async (req, res) => {
         $group: {
           _id: "$other",
           lastMessage: { $first: "$text" },
+          lastMessageHasFile: {
+            $first: {
+              $ne: [{ $ifNull: ["$fileUrl", ""] }, ""],
+            },
+          },
           lastAt: { $first: "$createdAt" },
           lastFrom: { $first: "$from" },
           unreadCount: {
@@ -476,6 +481,7 @@ router.get("/conversations/:phone", async (req, res) => {
           name: 1,
           online: 1,
           lastMessage: 1,
+          lastMessageHasFile: 1,
           lastAt: 1,
           lastFrom: 1,
           profilePic: 1,
