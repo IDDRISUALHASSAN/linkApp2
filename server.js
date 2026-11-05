@@ -246,13 +246,19 @@ io.on("connection", (socket) => {
     socket.emit("messageSent", msg);
   });
 
-  socket.on("likeMessage", async ({ messageId, userId, phoneNumber }) => {
-    if (!messageId || !userId) return;
+  socket.on("likeMessage", async ({ messageId }) => {
+    const phoneNumber = socketUsers.get(socket.id);
+    if (!messageId || !phoneNumber) return;
     try {
+      const user = await User.findOne({ PhoneNumber: phoneNumber }).select("_id");
+      if (!user) return;
+
       const msg = await Message.findById(messageId);
       if (!msg) return;
+      if (msg.from !== phoneNumber && msg.to !== phoneNumber) return;
 
-      const userIdStr = userId.toString();
+      const userId = user._id.toString();
+      const userIdStr = userId;
       const alreadyLiked = msg.likes.some((l) => l.toString() === userIdStr);
 
       if (alreadyLiked) {
@@ -265,13 +271,13 @@ io.on("connection", (socket) => {
       await msg.save();
 
       const payload = {
-        messageId,
+        messageId: msg._id.toString(),
         userId,
         liked: !alreadyLiked,
         likesCount: msg.likesCount,
       };
-      io.to(String(msg.from)).emit("messageLikeUpdate", payload);
-      io.to(String(msg.to)).emit("messageLikeUpdate", payload);
+      emitToUser(msg.from, "messageLikeUpdate", payload);
+      emitToUser(msg.to, "messageLikeUpdate", payload);
     } catch (err) {
       console.error("Like message error:", err);
     }
