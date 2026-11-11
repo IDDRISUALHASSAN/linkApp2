@@ -1,4 +1,4 @@
-// server.js
+﻿// server.js
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -15,6 +15,7 @@ const videoRouter = require("./routes/videoRouter");
 const followRouter = require("./routes/followRouter");
 const notificationRouter = require("./routes/notificationRouter");
 const commentRouter = require("./routes/commentRouter");
+const settingsRouter = require("./routes/settingsRouter");
 const Message = require("./model/message");
 const User = require("./model/user");
 const { sendExpoNotification } = require("./notificationHelper");
@@ -51,6 +52,7 @@ app.use("/", videoRouter);
 app.use("/", commentRouter);
 app.use("/", followRouter);
 app.use("/", notificationRouter);
+app.use("/", settingsRouter);
 
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
@@ -178,6 +180,25 @@ io.on("connection", (socket) => {
     console.log("Incoming message:", { from, to });
     if (!from || !to || !text?.trim()) return;
 
+    try {
+      const [sender, receiver] = await Promise.all([
+        User.findOne({ PhoneNumber: from }).select("_id blockedUsers"),
+        User.findOne({ PhoneNumber: to }).select("_id blockedUsers messagePermission notificationPrefs"),
+      ]);
+      if (sender && receiver) {
+        const blocked = (sender.blockedUsers || []).some((id) => String(id) === String(receiver._id)) ||
+          (receiver.blockedUsers || []).some((id) => String(id) === String(sender._id));
+        if (blocked) return;
+        const perm = receiver.messagePermission || "everyone";
+        if (perm === "none") return;
+        if (perm === "followers") {
+          const Follow = require("./model/follow");
+          const follows = await Follow.findOne({ follower: sender._id, following: receiver._id }).lean();
+          if (!follows) return;
+        }
+      }
+    } catch (e) { console.error("Message permission check error:", e.message); }
+
     const trimmedText = text.trim();
     const msg = new Message({
       from,
@@ -213,7 +234,7 @@ io.on("connection", (socket) => {
 
     if (recipientIsViewingChat) {
       console.log(
-        `[Message] ${to} is actively viewing this chat — skipping push`,
+        `[Message] ${to} is actively viewing this chat â€” skipping push`,
       );
     } else {
       const receiver = await User.findOne({ PhoneNumber: to }).select(
@@ -239,7 +260,7 @@ io.on("connection", (socket) => {
         );
         console.log(`[Message] Push result for ${to}:`, expoResponse);
       } else {
-        console.log(`[Message] No push token stored for ${to} — push skipped`);
+        console.log(`[Message] No push token stored for ${to} â€” push skipped`);
       }
     }
 
@@ -380,3 +401,5 @@ const startDatabase = async () => {
 };
 
 startDatabase();
+
+

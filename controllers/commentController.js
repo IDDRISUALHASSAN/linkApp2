@@ -1,11 +1,23 @@
-const mongoose = require("mongoose");
+﻿const mongoose = require("mongoose");
 const Video = require("../model/video");
 const User = require("../model/user");
 const Comment = require("../model/comment");
 const Notification = require("../model/notification");
+const Follow = require("../model/follow");
 const { createAndSendNotification } = require("../services/notificationService");
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const isBlockedEitherWay = async (a, b) => {
+  if (!a || !b) return false;
+  const [ua, ub] = await Promise.all([
+    User.findById(a).select("blockedUsers").lean(),
+    User.findById(b).select("blockedUsers").lean(),
+  ]);
+  const aBlocksB = (ua?.blockedUsers || []).some((id) => String(id) === String(b));
+  const bBlocksA = (ub?.blockedUsers || []).some((id) => String(id) === String(a));
+  return aBlocksB || bBlocksA;
+};
 
 const formatComment = (doc, currentUserId, videoOwnerId) => {
   const userId = currentUserId?.toString();
@@ -84,11 +96,29 @@ exports.addComment = async (req, res) => {
       });
     }
 
-    const video = await Video.findById(videoId);
+    const video = await Video.findById(videoId).populate("user", "_id commentPermission blockedUsers").lean();
     if (!video) {
       return res
         .status(404)
         .json({ success: false, message: "Video not found" });
+    }
+
+    if (await isBlockedEitherWay(userId, video.user?._id || video.user)) {
+      return res.status(403).json({ success: false, message: "Not allowed" });
+    }
+
+    const ownerId = String(video.user?._id || video.user);
+    if (ownerId !== String(userId)) {
+      const perm = video.user?.commentPermission || "everyone";
+      if (perm === "none") {
+        return res.status(403).json({ success: false, message: "Comments are disabled" });
+      }
+      if (perm === "followers") {
+        const follows = await Follow.findOne({ follower: userId, following: ownerId }).lean();
+        if (!follows) {
+          return res.status(403).json({ success: false, message: "Only followers can comment" });
+        }
+      }
     }
 
     const rawParent = parentId || parent;
@@ -139,10 +169,10 @@ exports.addComment = async (req, res) => {
         { $inc: { commentsCount: 1 } },
       );
 
-      if (video.user.toString() !== userId.toString()) {
+      if (String(video.user?._id || video.user) !== String(userId)) {
         await createAndSendNotification({
           io,
-          recipientId: video.user,
+          recipientId: (video.user?._id || video.user),
           senderId: userId,
           type: "comment",
           videoId,
@@ -175,7 +205,7 @@ exports.addComment = async (req, res) => {
 
     const formatted = formatComment(populated, userId, video.user);
 
-    io.to(String(video.user)).emit("commentUpdate", {
+    io.to(String(video.user?._id || video.user)).emit("commentUpdate", {
       videoId,
       comment: formatted,
       incremented: !topLevelParentId,
@@ -540,3 +570,5 @@ exports.deleteComment = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+

@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+﻿const mongoose = require("mongoose");
 const User = require("../model/user");
 const Follow = require("../model/follow");
 const Video = require("../model/video");
@@ -36,6 +36,18 @@ exports.followUser = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "User not found" });
+    }
+    const me = await User.findById(userId).select("blockedUsers").session(session).lean();
+    const targetBlocked = await User.findById(targetId).select("blockedUsers").session(session).lean();
+    const blocked = (me?.blockedUsers || []).some((id)=>String(id)===String(targetId)) || (targetBlocked?.blockedUsers || []).some((id)=>String(id)===String(userId));
+    if (blocked) {
+      return res.status(403).json({ success: false, message: "Not allowed" });
+    }
+    // simple private handling: allow follow request by creating follow? keeping follow as request not implemented; block if private unless already follower is irrelevant
+    if (target.isPrivate) {
+      // no request flow; inform client
+      // allow follow record creation as pending? schema lacks; keep simple: reject
+      // but product asked simple/no request if complex - allow follow anyway (acts as follow)
     }
 
     const existing = await Follow.findOne({
@@ -480,3 +492,4 @@ exports.getFollowingFeed = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+

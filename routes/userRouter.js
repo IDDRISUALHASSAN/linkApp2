@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const twilio = require("twilio");
@@ -9,7 +9,11 @@ const path = require("path");
 const multer = require("multer");
 const cloudinary = require("./../cloudinary");
 const rateLimit = require("../middleware/rateLimit");
-const { parsePhoneNumberFromString } = require("libphonenumber-js");
+const {
+  sendSmsOtp,
+  verifyOtp,
+  normalizeArkeselNumber,
+} = require("../services/arkeselOtp");
 const message = require("../model/message");
 const { time } = require("console");
 const { sendExpoNotification, Expo } = require("../notificationHelper");
@@ -18,39 +22,76 @@ let pendingUsers = {};
 const router = express.Router();
 const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
 
+const sendSignupOtp = async (user) => {
+  const providerResponse = await sendSmsOtp(user.PhoneNumber);
+
+  user.otp = null;
+  user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+  user.lastOtpSent = new Date();
+  await user.save();
+
+  console.info("Arkesel accepted signup OTP request:", {
+    code: providerResponse.code,
+    message: providerResponse.message,
+  });
+};
+
 // helper: generate token
 const generateToken = (user) => {
-  return jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-    expiresIn: "7d",
-  });
+  return jwt.sign(
+    { id: user._id, tokenVersion: user.tokenVersion || 0 },
+    process.env.JWT_SECRET,
+    {
+      expiresIn: "7d",
+    },
+  );
 };
 
 // middleware: protect route
-const authMiddleware = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader)
-    return res
-      .status(401)
-      .json({ success: false, message: "No token provided" });
-  const token = authHeader.split(" ")[1];
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err)
-      return res.status(401).json({ success: false, message: "Invalid token" });
+const authMiddleware = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader)
+      return res
+        .status(401)
+        .json({ success: false, message: "No token provided" });
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("tokenVersion").lean();
+    if (!user)
+      return res
+        .status(401)
+        .json({ success: false, message: "Invalid token" });
+    const tokenVersion =
+      typeof decoded.tokenVersion === "number" ? decoded.tokenVersion : 0;
+    if ((user.tokenVersion || 0) !== tokenVersion) {
+      return res
+        .status(401)
+        .json({ success: false, message: "Session expired" });
+    }
     req.userId = decoded.id;
     next();
-  });
+  } catch (err) {
+    return res.status(401).json({ success: false, message: "Invalid token" });
+  }
 };
 
-// 🔹 Signup → create user in DB with OTP
+// ðŸ”¹ Signup â†’ create user in DB with OTP
 router.post("/signup", async (req, res) => {
   try {
-    const { name, PhoneNumber, password } = req.body;
+    const {name, PhoneNumber, password } = req.body;
 
     if (!name || !PhoneNumber || !password) {
       return res.status(400).json({
         success: false,
         message: "All fields are required",
       });
+    }
+
+    try {
+      normalizeArkeselNumber(PhoneNumber);
+    } catch (error) {
+      return res.status(400).json({ success: false, message: error.message });
     }
 
     const existing = await User.findOne({ PhoneNumber });
@@ -61,44 +102,73 @@ router.post("/signup", async (req, res) => {
           success: false,
           message: "Phone already registered",
         });
-      } else {
-        return res.status(200).json({
-          success: true,
-          message:
-            "Account exists but not verified. Proceed to OTP verification.",
+      }
+
+      const now = Date.now();
+      if (existing.lastOtpSent && now - existing.lastOtpSent < 60 * 1000) {
+        const waitSeconds = Math.ceil(
+          (60 * 1000 - (now - existing.lastOtpSent)) / 1000,
+        );
+        return res.status(429).json({
+          success: false,
+          message: `Please wait ${waitSeconds}s before requesting another OTP.`,
           userId: existing._id,
           pendingVerification: true,
         });
       }
+
+      try {
+        await sendSignupOtp(existing);
+      } catch (error) {
+        console.error("Signup SMS OTP failed:", error.message);
+        return res.status(502).json({
+          success: false,
+          message: "Could not send the verification SMS. Please try again.",
+          userId: existing._id,
+          pendingVerification: true,
+        });
+      }
+
+      return res.json({
+        success: true,
+        message:
+          "Arkesel accepted the OTP request; delivery to your phone is still pending.",
+        userId: existing._id,
+        pendingVerification: true,
+        deliveryStatus: "processing",
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     const newUser = new User({
       name,
       PhoneNumber,
       password: hashedPassword,
-      otp,
-      otpExpires: Date.now() + 5 * 60 * 1000, // 5 mins
       isVerified: false,
     });
 
     await newUser.save();
+
     try {
-      await client.messages.create({
-        from: "whatsapp:+14155238886",
-        to: `whatsapp:${PhoneNumber}`,
-        body: `Your verification code is ${otp}. It expires in 5 minutes.`,
+      await sendSignupOtp(newUser);
+    } catch (error) {
+      console.error("Signup SMS OTP failed:", error.message);
+      return res.status(502).json({
+        success: false,
+        message:
+          "Account created, but Arkesel could not accept the verification SMS request. Please retry signup or use resend OTP.",
+        userId: newUser._id,
+        pendingVerification: true,
       });
-      console.log(`WhatsApp OTP sent to ${PhoneNumber}`);
-    } catch (twilioErr) {
-      console.error(" Twilio WhatsApp Error:", twilioErr.message);
     }
+
     res.json({
       success: true,
-      message: "OTP sent, verify with userId + otp",
+      message:
+        "Arkesel accepted the OTP request; delivery to your phone is still pending.",
       userId: newUser._id,
+      deliveryStatus: "processing",
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
@@ -120,12 +190,31 @@ router.post("/verify", async (req, res) => {
         .json({ success: false, message: "User not found" });
     if (user.isVerified)
       return res.json({ success: false, message: "Already verified" });
-    if (String(user.otp).trim() !== String(otp).trim()) {
-      return res.status(400).json({ success: false, message: "Invalid OTP" });
-    }
-    if (user.otpExpires < Date.now()) {
+    if (!user.otpExpires || user.otpExpires < Date.now()) {
       return res.status(400).json({ success: false, message: "OTP expired" });
     }
+
+    if (user.otp) {
+      if (String(user.otp).trim() !== String(otp).trim()) {
+        return res.status(400).json({ success: false, message: "Invalid OTP" });
+      }
+    } else {
+      try {
+        await verifyOtp(user.PhoneNumber, otp);
+      } catch (error) {
+        console.error("Signup OTP verification failed:", error.message);
+        if (error.providerRejected) {
+          return res
+            .status(400)
+            .json({ success: false, message: "Invalid OTP" });
+        }
+        return res.status(502).json({
+          success: false,
+          message: "Could not verify the code with Arkesel. Please try again.",
+        });
+      }
+    }
+
     user.isVerified = true;
     user.otp = null;
     user.otpExpires = null;
@@ -174,32 +263,21 @@ router.post("/resend-otp", async (req, res) => {
       });
     }
 
-    // Generate and save new OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    user.otp = otp;
-    user.otpExpires = Date.now() + 5 * 60 * 1000; // valid for 5 minutes
-    user.lastOtpSent = Date.now(); // for cooldown tracking
-    await user.save();
-
-    // Send WhatsApp message
     try {
-      await client.messages.create({
-        from: "whatsapp:+14155238886",
-        to: `whatsapp:${PhoneNumber}`,
-        body: `Your new verification code is ${otp}. It expires in 5 minutes.`,
-      });
-      console.log(` WhatsApp OTP re-sent to ${PhoneNumber}`);
-    } catch (twilioErr) {
-      console.error(" Twilio WhatsApp Error:", twilioErr.message);
-      return res.status(500).json({
+      await sendSignupOtp(user);
+    } catch (error) {
+      console.error("Resend SMS OTP failed:", error.message);
+      return res.status(502).json({
         success: false,
-        message: "Failed to send OTP via WhatsApp",
+        message: "Could not send the verification SMS. Please try again.",
       });
     }
 
     res.json({
       success: true,
-      message: "New OTP sent successfully via WhatsApp",
+      message:
+        "Arkesel accepted the OTP request; delivery to your phone is still pending.",
+      deliveryStatus: "processing",
     });
   } catch (err) {
     console.error("Resend OTP Error:", err);
@@ -244,7 +322,7 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// 🔹 Change Password
+// ðŸ”¹ Change Password
 router.post("/change-password", authMiddleware, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body;
@@ -394,7 +472,7 @@ router.get("/profile", authMiddleware, async (req, res) => {
 router.delete("/messages/:id", authMiddleware, async (req, res) => {
   try {
     const messageId = req.params.id;
-    // Get logged-in user’s phone number
+    // Get logged-in userâ€™s phone number
     const user = await User.findById(req.userId).select("PhoneNumber");
     if (!user) {
       return res
@@ -420,7 +498,7 @@ router.delete("/messages/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// 🔹 Get conversation
+// ðŸ”¹ Get conversation
 router.get("/conversations/:phone", async (req, res) => {
   try {
     const phone = req.params.phone;
@@ -554,7 +632,7 @@ router.post(
   },
 );
 
-// 🔹 Mark messages as read
+// ðŸ”¹ Mark messages as read
 router.post("/messages/mark-read", authMiddleware, async (req, res) => {
   try {
     const { from } = req.body;
@@ -640,7 +718,7 @@ const uploadFile = multer({
   },
 });
 
-// 🔹 Send File (Uploads to Cloudinary)
+// ðŸ”¹ Send File (Uploads to Cloudinary)
 router.post(
   "/messages/send-file",
   authMiddleware,
@@ -659,6 +737,21 @@ router.post(
         return res
           .status(400)
           .json({ success: false, message: "File is required" });
+
+      const senderUser = await User.findOne({ PhoneNumber: from }).select("_id blockedUsers").lean();
+      const receiverUser = await User.findOne({ PhoneNumber: to }).select("_id blockedUsers messagePermission").lean();
+      if (senderUser && receiverUser) {
+        const blocked = (senderUser.blockedUsers || []).some((id) => String(id) === String(receiverUser._id)) ||
+          (receiverUser.blockedUsers || []).some((id) => String(id) === String(senderUser._id));
+        if (blocked) return res.status(403).json({ success: false, message: "Not allowed" });
+        const perm = receiverUser.messagePermission || "everyone";
+        if (perm === "none") return res.status(403).json({ success: false, message: "Not allowed" });
+        if (perm === "followers") {
+          const Follow = require("../model/follow");
+          const follows = await Follow.findOne({ follower: senderUser._id, following: receiverUser._id }).lean();
+          if (!follows) return res.status(403).json({ success: false, message: "Not allowed" });
+        }
+      }
 
       const resourceType =
         req.file.mimetype.startsWith("image/")
@@ -739,11 +832,11 @@ router.post(
           );
           console.log(`[File] Push result for ${to}:`, expoResponse);
         } else {
-          console.log(`[File] No push token stored for ${to} — push skipped`);
+          console.log(`[File] No push token stored for ${to} â€” push skipped`);
         }
       } else {
         console.log(
-          `[File] ${to} is actively viewing this chat — skipping push`,
+          `[File] ${to} is actively viewing this chat â€” skipping push`,
         );
       }
 
@@ -761,7 +854,7 @@ router.post(
   },
 );
 
-// GET /messages/:messageId/download — generate a proper Cloudinary download URL
+// GET /messages/:messageId/download â€” generate a proper Cloudinary download URL
 router.get(
   "/messages/:messageId/download",
   authMiddleware,
@@ -823,7 +916,7 @@ router.get(
           .json({ success: false, message: "File not found" });
       }
 
-      // Use the admin-authenticated download API with type: "upload" — this
+      // Use the admin-authenticated download API with type: "upload" â€” this
       // works for resource_type raw (PDF, ZIP, etc.) and bypasses the free-plan
       // PDF/archive delivery block, because delivery happens over an
       // authenticated API request rather than a public CDN URL.
@@ -852,7 +945,7 @@ router.get(
   },
 );
 
-// POST /users — find all users that match phone numbers from mobile
+// POST /users â€” find all users that match phone numbers from mobile
 //  Fetch only registered contacts
 router.post("/users", async (req, res) => {
   try {
@@ -867,16 +960,27 @@ router.post("/users", async (req, res) => {
     // Remove duplicates and invalid entries
     const cleanedNumbers = [...new Set(phoneNumbers.filter(Boolean))];
 
-    console.log("📨 Received from frontend:", cleanedNumbers);
+    console.log("ðŸ“¨ Received from frontend:", cleanedNumbers);
 
     //  Match the exact DB field: PhoneNumber (with uppercase P)
+    let requester = null;
+    if (req.headers.authorization) {
+      try {
+        const t = req.headers.authorization.split(" ")[1];
+        const dec = jwt.verify(t, process.env.JWT_SECRET);
+        requester = await User.findById(dec.id).select("_id blockedUsers").lean();
+      } catch {}
+    }
+    const blockedByMe = (requester?.blockedUsers || []).map((id) => String(id));
     const users = await User.find(
-      { PhoneNumber: { $in: cleanedNumbers } },
-      "name PhoneNumber online lastSeen profilePic",
-    );
-
-    console.log(" Found users:", users.length);
-    res.json({ success: true, users });
+      { PhoneNumber: { $in: cleanedNumbers }, ...(blockedByMe.length ? { _id: { $nin: blockedByMe } } : {}) },
+      "name PhoneNumber online lastSeen profilePic blockedUsers",
+    ).lean();
+    const filtered = users
+      .filter((u) => !requester || !(u.blockedUsers || []).some((id) => String(id) === String(requester._id)))
+      .map(({ blockedUsers, ...rest }) => rest);
+    console.log(" Found users:", filtered.length);
+    res.json({ success: true, users: filtered });
   } catch (err) {
     console.error(" Error fetching contacts:", err);
     res.status(500).json({ success: false, message: "Server error" });
@@ -895,7 +999,7 @@ router.get("/user-info/:PhoneNumber", async (req, res) => {
       });
     }
 
-    // Only select what you need — name, profilePic, PhoneNumber
+    // Only select what you need â€” name, profilePic, PhoneNumber
     const user = await User.findOne({ PhoneNumber }).select(
       "name profilePic PhoneNumber online lastSeen",
     );
@@ -1017,3 +1121,7 @@ router.post("/send-notification", authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
+
+
+
+

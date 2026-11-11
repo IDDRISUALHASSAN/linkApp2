@@ -26,25 +26,34 @@ const buildNotificationBody = (type, text) => {
   }
 };
 
+const typeToPrefKey = (type) => {
+  if (type === "like" || type === "comment_like") return "likes";
+  if (type === "comment" || type === "reply") return "comments";
+  if (type === "follow") return "follows";
+  return null;
+};
+
 const emitSocketNotification = (io, userId, payload) => {
   if (!io || !userId) return;
   io.to(String(userId)).emit("notification", payload);
 };
 
-const collectRecipientPushTokens = async (userId) => {
-  if (!userId) return [];
-  const user = await User.findById(userId)
-    .select("expoPushToken expoPushTokens")
-    .lean();
+const collectRecipientPushTokens = async (user) => {
   if (!user) return [];
   const tokens = [
     ...new Set(
-      [(user.expoPushToken || ""), ...(user.expoPushTokens || [])].filter(
-        Boolean,
-      ),
+      [(user.expoPushToken || ""), ...(user.expoPushTokens || [])].filter(Boolean),
     ),
   ];
   return tokens.filter((t) => Expo.isExpoPushToken(t));
+};
+
+const isNotificationAllowed = (recipient, type) => {
+  const prefs = recipient?.notificationPrefs || {};
+  if (prefs.all === false) return false;
+  const key = typeToPrefKey(type);
+  if (key && prefs[key] === false) return false;
+  return true;
 };
 
 const createAndSendNotification = async ({
@@ -58,6 +67,17 @@ const createAndSendNotification = async ({
 }) => {
   if (!recipientId || !senderId || recipientId.toString() === senderId.toString())
     return null;
+
+  const [recipient, sender] = await Promise.all([
+    User.findById(recipientId).select("notificationPrefs expoPushToken expoPushTokens blockedUsers").lean(),
+    User.findById(senderId).select("name profilePic blockedUsers").lean(),
+  ]);
+  if (!recipient || !sender) return null;
+
+  const recipientBlocked = (recipient.blockedUsers || []).some((id) => String(id) === String(senderId));
+  const senderBlocked = (sender.blockedUsers || []).some((id) => String(id) === String(recipientId));
+  if (recipientBlocked || senderBlocked) return null;
+  if (!isNotificationAllowed(recipient, type)) return null;
 
   const dupCheck = {
     recipient: recipientId,
@@ -78,10 +98,6 @@ const createAndSendNotification = async ({
     comment: commentId || undefined,
   });
 
-  const sender = await User.findById(senderId)
-    .select("name profilePic")
-    .lean();
-
   const populated = await Notification.findById(notification._id)
     .populate("sender", "name profilePic")
     .populate("video", "thumbnailUrl")
@@ -97,30 +113,29 @@ const createAndSendNotification = async ({
     createdAt: populated.createdAt,
   });
 
-  const tokens = await collectRecipientPushTokens(recipientId);
+  const tokens = collectRecipientPushTokens(recipient);
   if (tokens.length > 0) {
     const title = buildNotificationTitle(sender?.name);
     const body = buildNotificationBody(type, text);
-     const data = {
-    type,
-    userId: senderId?.toString(),
-    videoId: videoId?.toString(),
-    commentId: commentId?.toString(),
-  };
+    const data = {
+      type,
+      userId: senderId?.toString(),
+      videoId: videoId?.toString(),
+      commentId: commentId?.toString(),
+    };
     const result = await sendExpoNotification(tokens, title, body, data);
-    console.log(`[Push] ${type} notification to ${recipientId}:`, result);
+    console.log(`[Push] ${type} notification to ${recipientId}:`, result?.delivery || result);
   }
 
   return notification;
 };
 
-const removeRelatedNotifications = async (videoIds, commentIds) => {
-  await Notification.deleteMany({
-    $or: [
-      ...(videoIds ? [{ video: { $in: videoIds } }] : []),
-      ...(commentIds ? [{ comment: { $in: commentIds } }] : []),
-    ],
-  });
+const removeRelatedNotifications = async (videoIds = [], commentIds = []) => {
+  const or = [];
+  if (Array.isArray(videoIds) && videoIds.length) or.push({ video: { $in: videoIds } });
+  if (Array.isArray(commentIds) && commentIds.length) or.push({ comment: { $in: commentIds } });
+  if (!or.length) return;
+  await Notification.deleteMany({ $or: or });
 };
 
 module.exports = {
@@ -130,4 +145,5 @@ module.exports = {
   collectRecipientPushTokens,
   createAndSendNotification,
   removeRelatedNotifications,
+  isNotificationAllowed,
 };

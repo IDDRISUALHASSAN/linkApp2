@@ -1,10 +1,11 @@
-const mongoose = require("mongoose");
+﻿const mongoose = require("mongoose");
 const fs = require("fs");
 const cloudinary = require("../cloudinary");
 const Video = require("../model/video");
 const User = require("../model/user");
 const Comment = require("../model/comment");
 const Notification = require("../model/notification");
+const Follow = require("../model/follow");
 const { removeRelatedNotifications } = require("../services/notificationService");
 
 const VALID_VIDEO_MIME = [
@@ -19,6 +20,21 @@ const VALID_VIDEO_MIME = [
 const VIDEO_SIZE_LIMIT = 150 * 1024 * 1024;
 
 const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(id);
+
+const getBlockedIdSet = async (userId) => {
+  const me = await User.findById(userId).select("blockedUsers").lean();
+  const blockedByMe = (me?.blockedUsers || []).map((id) => String(id));
+  const blockedMe = await User.find({ blockedUsers: userId }).select("_id").lean();
+  return new Set([...blockedByMe, ...blockedMe.map((u) => String(u._id))]);
+};
+
+const canViewPrivate = async (viewerId, ownerId) => {
+  if (String(viewerId) === String(ownerId)) return true;
+  const owner = await User.findById(ownerId).select("isPrivate").lean();
+  if (!owner?.isPrivate) return true;
+  const follows = await Follow.findOne({ follower: viewerId, following: ownerId }).lean();
+  return !!follows;
+};
 
 exports.getVideoUpload = () => {
   const multer = require("multer");
@@ -212,8 +228,17 @@ exports.randomFeed = async (req, res) => {
     const matchStage =
       exclude.length > 0 ? { _id: { $nin: exclude } } : {};
 
+    const blockedSet = await getBlockedIdSet(userId);
+    const blockedIds = [...blockedSet].filter((id) => isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id));
+    if (blockedIds.length) {
+      matchStage.user = { ...(matchStage.user || {}), $nin: blockedIds };
+    }
+    // exclude private accounts' videos unless following (best-effort: filter post-lookup by isFollowing/private not trivial in sample; join user privacy)
     let pipeline = [
       { $match: matchStage },
+      { $lookup: { from: "users", localField: "user", foreignField: "_id", as: "_owner" } },
+      { $unwind: "$_owner" },
+      { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) } ] } },
       { $sample: { size: limit } },
       {
         $lookup: {
@@ -262,7 +287,13 @@ exports.randomFeed = async (req, res) => {
 
     let reshuffled = false;
     if (results.length < limit) {
+      const fillMatch = {};
+      if (blockedIds.length) fillMatch.user = { $nin: blockedIds };
       const fillPipeline = [
+        { $match: fillMatch },
+        { $lookup: { from: "users", localField: "user", foreignField: "_id", as: "_owner" } },
+        { $unwind: "$_owner" },
+        { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) } ] } },
         { $sample: { size: limit - results.length } },
         {
           $lookup: {
@@ -289,7 +320,7 @@ exports.randomFeed = async (req, res) => {
         },
         { $unwind: { path: "$musicId", preserveNullAndEmptyArrays: true } },
         { $addFields: { isLiked: { $cond: { if: { $in: [new mongoose.Types.ObjectId(userId), "$likes"] }, then: true, else: false } } } },
-        { $project: { __v: 0, likes: 0 } },
+        { $project: { __v: 0, likes: 0, _owner: 0 } },
       ];
 
       const fillResults = await Video.aggregate(fillPipeline);
@@ -411,6 +442,15 @@ exports.getUserVideos = async (req, res) => {
         .json({ success: false, message: "Invalid user ID" });
     }
 
+    const blockedSet = await getBlockedIdSet(userId);
+    if (blockedSet.has(String(targetUserId))) {
+      return res.json({ success: true, videos: [], nextCursor: null, hasNextPage: false });
+    }
+    const allowed = await canViewPrivate(userId, targetUserId);
+    if (!allowed) {
+      return res.json({ success: true, videos: [], nextCursor: null, hasNextPage: false, private: true });
+    }
+
     let query = { user: targetUserId };
     if (cursor) {
       query.createdAt = { $lt: new Date(cursor) };
@@ -479,7 +519,7 @@ exports.getVideo = async (req, res) => {
     }
 
     const video = await Video.findById(id)
-      .populate("user", "_id name profilePic")
+      .populate("user", "_id name profilePic isPrivate")
       .populate("musicId", "title artist");
 
     if (!video) {
@@ -488,14 +528,22 @@ exports.getVideo = async (req, res) => {
         .json({ success: false, message: "Video not found" });
     }
 
-    const doc = video.toObject();
-    doc.isLiked = video.likes.some((l) => l.toString() === userId.toString());
-
+    const blockedSet = await getBlockedIdSet(userId);
+    const ownerId = String(video.user?._id || "");
+    if (blockedSet.has(ownerId)) {
+      return res.status(404).json({ success: false, message: "Video not found" });
+    }
     const Follow = require("../model/follow");
     const followDoc = await Follow.findOne({
       follower: userId,
       following: video.user._id,
     }).lean();
+    if (video.user?.isPrivate && ownerId !== String(userId) && !followDoc) {
+      return res.status(403).json({ success: false, message: "This account is private" });
+    }
+
+    const doc = video.toObject();
+    doc.isLiked = video.likes.some((l) => l.toString() === userId.toString());
     doc.isFollowing = !!followDoc;
 
     res.json({ success: true, video: doc });
@@ -724,3 +772,14 @@ exports.getMusic = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+
+
+
+
+
+
+
+
+
+
