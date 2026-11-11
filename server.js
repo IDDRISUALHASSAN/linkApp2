@@ -16,6 +16,10 @@ const followRouter = require("./routes/followRouter");
 const notificationRouter = require("./routes/notificationRouter");
 const commentRouter = require("./routes/commentRouter");
 const settingsRouter = require("./routes/settingsRouter");
+const {
+  router: inquiryRouter,
+  startInquiryCleanup,
+} = require("./routes/inquiryRouter");
 const Message = require("./model/message");
 const User = require("./model/user");
 const { sendExpoNotification } = require("./notificationHelper");
@@ -53,6 +57,7 @@ app.use("/", commentRouter);
 app.use("/", followRouter);
 app.use("/", notificationRouter);
 app.use("/", settingsRouter);
+app.use("/", inquiryRouter);
 
 // Create HTTP + WebSocket server
 const server = http.createServer(app);
@@ -65,6 +70,7 @@ const io = new Server(server, {
 
 //attached globally
 app.set("io", io);
+global.__io = io;
 
 // Online users map (phoneNumber -> primary socket.id), retained for route compatibility.
 let onlineUsers = {};
@@ -342,6 +348,28 @@ io.on("connection", (socket) => {
     console.log(`${userId} joined their room`);
   });
 
+  // Inquiry rooms: join by BOTH userId and phoneNumber so clients that only
+  // authenticate by phone still receive inquiry events.
+  socket.on("joinInquiry", async (userIdOrPhone) => {
+    if (typeof userIdOrPhone !== "string" || !userIdOrPhone.trim()) return;
+    const key = userIdOrPhone.trim();
+    socket.join(`inquiry:${key}`);
+    try {
+      const user = await User.findOne({
+        $or: [
+          { _id: mongoose.isValidObjectId(key) ? key : null },
+          { PhoneNumber: key },
+        ],
+      }).select("_id PhoneNumber");
+      if (user) {
+        socket.join(`inquiry:${user._id}`);
+        socket.join(`inquiry:${user.PhoneNumber}`);
+      }
+    } catch (e) {
+      console.error("joinInquiry error:", e.message);
+    }
+  });
+
   socket.on("disconnect", async () => {
     console.log("Socket disconnected:", socket.id);
     const phone = socketUsers.get(socket.id);
@@ -390,6 +418,7 @@ const startDatabase = async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
     console.log("Connected to MongoDB");
+    startInquiryCleanup();
     startServer();
   } catch (err) {
     console.error("DB error:", err.message || err);

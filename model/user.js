@@ -31,12 +31,19 @@ const userSchema = new mongoose.Schema(
       enum: ["everyone", "followers", "none"],
       default: "everyone",
     },
+    // Who is allowed to open an inquiry (DM request) with this user
+    inquiryPermission: {
+      type: String,
+      enum: ["everyone", "followers", "none"],
+      default: "everyone",
+    },
     notificationPrefs: {
       all: { type: Boolean, default: true },
       likes: { type: Boolean, default: true },
       comments: { type: Boolean, default: true },
       follows: { type: Boolean, default: true },
       messages: { type: Boolean, default: true },
+      inquiries: { type: Boolean, default: true },
     },
     blockedUsers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     tokenVersion: { type: Number, default: 0 },
