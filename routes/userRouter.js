@@ -491,6 +491,9 @@ router.delete("/messages/:id", authMiddleware, async (req, res) => {
       return res.status(403).json({ success: false, message: "Unauthorized" });
     }
     await Message.findByIdAndDelete(messageId);
+    const io = req.app.get("io");
+    io?.to(`user:${message.from}`).emit("messageDeleted", String(message._id));
+    io?.to(`user:${message.to}`).emit("messageDeleted", String(message._id));
     return res.json({ success: true, message: "Message deleted successfully" });
   } catch (err) {
     console.error("Error deleting message:", err);
@@ -648,12 +651,35 @@ router.post("/messages/mark-read", authMiddleware, async (req, res) => {
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
-    const result = await Message.updateMany(
-      { from, to: user.PhoneNumber, read: false },
-      { $set: { read: true } },
-    );
+    const messages = await Message.find({
+      from,
+      to: user.PhoneNumber,
+      read: false,
+    }).select("_id");
 
-    return res.json({ success: true, modifiedCount: result.modifiedCount });
+    if (messages.length) {
+      const ids = messages.map((m) => m._id);
+      const result = await Message.updateMany(
+        { _id: { $in: ids } },
+        { $set: { read: true, seenAt: new Date(), status: "seen" } },
+      );
+
+      const io = req.app.get("io");
+      const onlineUsers = req.app.get("onlineUsers") || {};
+      const senderPhone = from;
+      const recipientSocketId = onlineUsers[senderPhone];
+      if (recipientSocketId && io) {
+        io.to(recipientSocketId).emit("messageRead", {
+          messageIds: ids.map((id) => String(id)),
+          status: "seen",
+          seenAt: new Date().toISOString(),
+        });
+      }
+
+      return res.json({ success: true, modifiedCount: result.modifiedCount });
+    }
+
+    return res.json({ success: true, modifiedCount: 0 });
   } catch (error) {
     console.error("Mark read error:", error);
     res.status(500).json({ success: false, message: "Server error" });
@@ -1121,7 +1147,6 @@ router.post("/send-notification", authMiddleware, async (req, res) => {
 });
 
 module.exports = router;
-
 
 
 

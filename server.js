@@ -150,6 +150,7 @@ io.on("connection", (socket) => {
     sockets.add(socket.id);
     userSockets.set(phoneNumber, sockets);
     socketUsers.set(socket.id, phoneNumber);
+    socket.join(`user:${phoneNumber}`);
     onlineUsers[phoneNumber] = socket.id;
     appState[phoneNumber] = "active";
     console.log(`${phoneNumber} logged in`);
@@ -214,16 +215,27 @@ io.on("connection", (socket) => {
       read: false,
     });
 
+    msg.status = "sent";
     await msg.save();
     console.log(`[Message] Saved message from ${from} to ${to}`);
 
     // Deliver in real time via Socket.IO when the recipient has a connected socket
     if (onlineUsers[to]) {
-      emitToUser(to, "message", msg);
+      const deliveredPayload = {
+        ...msg.toObject(),
+        status: "delivered",
+        deliveredAt: new Date().toISOString(),
+      };
+      emitToUser(to, "message", deliveredPayload);
       emitToUser(to, "notification", {
         from,
         message: trimmedText,
         time: Date.now(),
+      });
+      socket.emit("messageDelivered", {
+        messageId: msg._id.toString(),
+        status: "delivered",
+        deliveredAt: new Date().toISOString(),
       });
       console.log(
         `[Message] Socket delivered to ${to} (socket: ${onlineUsers[to]})`,
@@ -270,7 +282,17 @@ io.on("connection", (socket) => {
       }
     }
 
-    socket.emit("messageSent", msg);
+    const deliveredMessage = await Message.findByIdAndUpdate(
+      msg._id,
+      {
+        $set: {
+          deliveredAt: new Date(),
+          status: "delivered",
+        },
+      },
+      { new: true },
+    );
+    socket.emit("messageSent", deliveredMessage || msg);
   });
 
   socket.on("likeMessage", async ({ messageId }) => {
@@ -307,6 +329,45 @@ io.on("connection", (socket) => {
       emitToUser(msg.to, "messageLikeUpdate", payload);
     } catch (err) {
       console.error("Like message error:", err);
+    }
+  });
+
+  socket.on("messageReaction", async ({ messageId, emoji }) => {
+    const phoneNumber = socketUsers.get(socket.id);
+    const allowedReactions = ["❤️", "😂", "😮", "😢", "🙏"];
+    if (!phoneNumber || !mongoose.Types.ObjectId.isValid(messageId)) return;
+    if (emoji !== null && !allowedReactions.includes(emoji)) return;
+
+    try {
+      const [user, message] = await Promise.all([
+        User.findOne({ PhoneNumber: phoneNumber }).select("_id"),
+        Message.findById(messageId),
+      ]);
+      if (!user || !message) return;
+      if (message.from !== phoneNumber && message.to !== phoneNumber) return;
+
+      const userId = String(user._id);
+      const previousReaction = message.reactions.find(
+        (reaction) => String(reaction.user) === userId,
+      );
+      const shouldRemove = !emoji || previousReaction?.emoji === emoji;
+      message.reactions = message.reactions.filter(
+        (reaction) => String(reaction.user) !== userId,
+      );
+      if (!shouldRemove) message.reactions.push({ user: user._id, emoji });
+      await message.save();
+
+      const payload = {
+        messageId: String(message._id),
+        reactions: message.reactions.map((reaction) => ({
+          userId: String(reaction.user),
+          emoji: reaction.emoji,
+        })),
+      };
+      emitToUser(message.from, "messageReactionUpdate", payload);
+      emitToUser(message.to, "messageReactionUpdate", payload);
+    } catch (err) {
+      console.error("Message reaction error:", err);
     }
   });
 
@@ -430,5 +491,3 @@ const startDatabase = async () => {
 };
 
 startDatabase();
-
-
