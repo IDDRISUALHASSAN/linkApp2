@@ -59,8 +59,6 @@ const whitelist = (body) => {
     out.messagePermission = body.messagePermission;
   if (["everyone", "followers", "none"].includes(body.inquiryPermission))
     out.inquiryPermission = body.inquiryPermission;
-  if (["everyone", "followers", "none"].includes(body.inquiryPermission))
-    out.inquiryPermission = body.inquiryPermission;
   if (body.notificationPrefs && typeof body.notificationPrefs === "object") {
     const p = body.notificationPrefs;
     for (const k of ["all", "likes", "comments", "follows", "messages", "inquiries"]) {
@@ -323,3 +321,4 @@ router.delete("/me", auth, deleteLimiter, async (req, res) => {
 });
 
 module.exports = router;
+

@@ -234,11 +234,14 @@ exports.randomFeed = async (req, res) => {
       matchStage.user = { ...(matchStage.user || {}), $nin: blockedIds };
     }
     // exclude private accounts' videos unless following (best-effort: filter post-lookup by isFollowing/private not trivial in sample; join user privacy)
+    const FollowModel = require("../model/follow");
+    const myFollows = await FollowModel.find({ follower: userId }).select("following").lean();
+    const followingOwnerIds = myFollows.map((f) => f.following);
     let pipeline = [
       { $match: matchStage },
       { $lookup: { from: "users", localField: "user", foreignField: "_id", as: "_owner" } },
       { $unwind: "$_owner" },
-      { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) } ] } },
+      { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) }, { "_owner._id": { $in: followingOwnerIds } } ] } },
       { $sample: { size: limit } },
       {
         $lookup: {
@@ -275,12 +278,7 @@ exports.randomFeed = async (req, res) => {
           },
         },
       },
-      {
-        $project: {
-          __v: 0,
-          likes: 0,
-        },
-      },
+      { $unset: ["__v", "likes"] },
     ];
 
     let results = await Video.aggregate(pipeline);
@@ -293,7 +291,7 @@ exports.randomFeed = async (req, res) => {
         { $match: fillMatch },
         { $lookup: { from: "users", localField: "user", foreignField: "_id", as: "_owner" } },
         { $unwind: "$_owner" },
-        { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) } ] } },
+        { $match: { $or: [ { "_owner.isPrivate": { $ne: true } }, { "_owner._id": new mongoose.Types.ObjectId(userId) }, { "_owner._id": { $in: followingOwnerIds } } ] } },
         { $sample: { size: limit - results.length } },
         {
           $lookup: {
@@ -320,7 +318,7 @@ exports.randomFeed = async (req, res) => {
         },
         { $unwind: { path: "$musicId", preserveNullAndEmptyArrays: true } },
         { $addFields: { isLiked: { $cond: { if: { $in: [new mongoose.Types.ObjectId(userId), "$likes"] }, then: true, else: false } } } },
-        { $project: { __v: 0, likes: 0, _owner: 0 } },
+        { $unset: ["__v", "likes", "_owner"] },
       ];
 
       const fillResults = await Video.aggregate(fillPipeline);
@@ -376,6 +374,9 @@ exports.getFeed = async (req, res) => {
       query.createdAt = { $lt: new Date(cursor) };
     }
 
+    const FollowModelGf = require("../model/follow");
+    const myFollowsGf = await FollowModelGf.find({ follower: userId }).select("following").lean();
+    const followingIdsGf = new Set(myFollowsGf.map((f) => String(f.following)));
     const videos = await Video.find(query)
       .sort({ createdAt: -1 })
       .limit(limit + 1)
@@ -413,13 +414,23 @@ exports.getFeed = async (req, res) => {
       return doc;
     });
 
+    // Hide videos from private accounts the viewer does not follow
+    const ownerPrivacy = await User.find({ _id: { $in: uploaderIds } }).select("_id isPrivate").lean();
+    const privateOwners = new Set(ownerPrivacy.filter((u) => u.isPrivate).map((u) => String(u._id)));
+    const visibleVideos = enriched.filter(
+      (v) =>
+        !v.user ||
+        !privateOwners.has(String(v.user._id)) ||
+        followingUploaderIds.has(String(v.user._id)) ||
+        String(v.user._id) === String(userId),
+    );
     const nextCursor = hasNextPage
       ? result[result.length - 1]?.createdAt?.toISOString()
       : null;
 
     res.json({
       success: true,
-      videos: enriched,
+      videos: visibleVideos,
       nextCursor: nextCursor,
       hasNextPage,
     });
@@ -617,6 +628,10 @@ exports.toggleLike = async (req, res) => {
         .json({ success: false, message: "Video not found" });
     }
 
+    // Privacy: cannot like videos of private accounts you do not follow
+    if (!(await canViewPrivate(userId, video.user))) {
+      return res.status(403).json({ success: false, message: "This account is private" });
+    }
     const alreadyLiked = video.likes.some(
       (l) => l.toString() === userId.toString(),
     );
@@ -772,6 +787,9 @@ exports.getMusic = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+
+
 
 
 

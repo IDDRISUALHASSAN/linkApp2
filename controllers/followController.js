@@ -365,7 +365,7 @@ exports.getUserProfile = async (req, res) => {
 
     const [target, followDoc] = await Promise.all([
       User.findById(targetId)
-        .select("_id name profilePic online lastSeen followersCount followingCount")
+        .select("_id name profilePic online lastSeen followersCount followingCount isPrivate")
         .lean(),
       Follow.findOne({ follower: userId, following: targetId }).lean(),
     ]);
@@ -399,6 +399,7 @@ exports.getUserProfile = async (req, res) => {
         videosCount,
         totalLikes,
         isFollowing: !!followDoc,
+        isPrivate: !!target.isPrivate,
         isMe: target._id.toString() === userId.toString(),
       },
     });
@@ -492,4 +493,5 @@ exports.getFollowingFeed = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
 

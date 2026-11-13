@@ -234,13 +234,24 @@ exports.getComments = async (req, res) => {
         .json({ success: false, message: "Invalid video ID" });
     }
 
-    const video = await Video.findById(videoId);
+        const video = await Video.findById(videoId)
+      .populate("user", "_id isPrivate")
+      .lean();
     if (!video) {
       return res
         .status(404)
         .json({ success: false, message: "Video not found" });
     }
 
+    // Privacy: comments of private accounts are visible to owner and followers only
+    const ownerIdC = String(video.user?._id || video.user);
+    if (video.user && video.user.isPrivate && ownerIdC !== String(userId)) {
+      const FollowC = require("../model/follow");
+      const followsC = await FollowC.findOne({ follower: userId, following: ownerIdC }).lean();
+      if (!followsC) {
+        return res.status(403).json({ success: false, message: "This account is private" });
+      }
+    }
     let query = { video: videoId, parent: null };
     if (cursor) {
       query.createdAt = { $lt: new Date(cursor) };
@@ -570,5 +581,8 @@ exports.deleteComment = async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 };
+
+
+
 
 
