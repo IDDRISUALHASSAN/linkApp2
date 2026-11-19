@@ -8,6 +8,7 @@ import {
   deleteAccount,
   getBlockedUsers,
   getSettings,
+  getOtpRequestErrorAlert,
   logoutAllDevices,
   requestDeleteOtp,
   requestPhoneChangeOtp,
@@ -496,7 +497,8 @@ export default function SettingScreen() {
         await authOut();
         return;
       }
-      Alert.alert("Error", e.message || "Could not send OTP.");
+      const alert = getOtpRequestErrorAlert(e, "Could not send OTP.");
+      Alert.alert(alert.title, alert.message);
     } finally {
       setPhoneBusy(false);
     }
@@ -534,7 +536,8 @@ export default function SettingScreen() {
         await authOut();
         return;
       }
-      Alert.alert("Error", e.message || "Could not send OTP.");
+      const alert = getOtpRequestErrorAlert(e, "Could not send OTP.");
+      Alert.alert(alert.title, alert.message);
     } finally {
       setDeleteBusy(false);
     }

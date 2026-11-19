@@ -13,7 +13,12 @@ const Follow = require("../model/follow");
 const Message = require("../model/message");
 const Notification = require("../model/notification");
 const cloudinary = require("../cloudinary");
-const { sendSmsOtp, verifyOtp, normalizeArkeselNumber } = require("../services/arkeselOtp");
+const {
+  generateOtp,
+  normalizePhoneNumber,
+  sendSmsOtp,
+  verifyOtp,
+} = require("../services/mnotifyOtp");
 
 const router = express.Router();
 const otpLimiter = rateLimit(60 * 1000, 5);
@@ -157,12 +162,9 @@ router.get("/me/blocked", auth, settingsLimiter, async (req, res) => {
 router.post("/me/phone/request-otp", auth, otpLimiter, async (req, res) => {
   try {
     const { phoneNumber } = req.body || {};
-    let normalized;
-    try { normalized = normalizeArkeselNumber(phoneNumber); } catch (e) {
-      return res.status(400).json({ success: false, message: e.message });
-    }
-    // store normalized? keep original normalized form consistent with existing; check conflict
-    const conflict = await User.findOne({ PhoneNumber: { $in: [phoneNumber, `+${normalized}`, normalized] }, _id: { $ne: req.userId } }).lean();
+    const normalized = normalizePhoneNumber(phoneNumber);
+    if (!normalized) return res.status(400).json({ success: false, message: "Invalid phone number format" });
+    const conflict = await User.findOne({ PhoneNumber: normalized, _id: { $ne: req.userId } }).lean();
     if (conflict) return res.status(400).json({ success: false, message: "Phone number already in use" });
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
@@ -171,13 +173,19 @@ router.post("/me/phone/request-otp", auth, otpLimiter, async (req, res) => {
       const waitSeconds = Math.ceil((60 * 1000 - (now - new Date(user.lastOtpSent).getTime())) / 1000);
       return res.status(429).json({ success: false, message: `Please wait ${waitSeconds}s before requesting another OTP.` });
     }
+    if (!(await User.reserveOtpRequest(user._id))) {
+      return res.status(429).json({ success: false, message: "You can request a maximum of 3 OTPs per day." });
+    }
+    const otp = generateOtp();
     try {
-      await sendSmsOtp(phoneNumber);
+      await sendSmsOtp(normalized, otp);
     } catch (error) {
       console.error("Phone change OTP failed:", error.message);
       return res.status(502).json({ success: false, message: "Could not send verification SMS." });
     }
-    user.otp = null;
+    user.otp = otp;
+    user.otpPurpose = "phone-change";
+    user.otpPhoneNumber = normalized;
     user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
     user.lastOtpSent = new Date();
     await user.save();
@@ -192,25 +200,26 @@ router.post("/me/phone/verify-otp", auth, otpLimiter, async (req, res) => {
   try {
     const { phoneNumber, otp } = req.body || {};
     if (!phoneNumber || !otp) return res.status(400).json({ success: false, message: "Phone number and OTP required" });
-    let normalized;
-    try { normalized = normalizeArkeselNumber(phoneNumber); } catch (e) {
-      return res.status(400).json({ success: false, message: e.message });
-    }
-    const conflict = await User.findOne({ PhoneNumber: { $in: [phoneNumber, `+${normalized}`, normalized] }, _id: { $ne: req.userId } }).lean();
+    const normalized = normalizePhoneNumber(phoneNumber);
+    if (!normalized) return res.status(400).json({ success: false, message: "Invalid phone number format" });
+    const conflict = await User.findOne({ PhoneNumber: normalized, _id: { $ne: req.userId } }).lean();
     if (conflict) return res.status(400).json({ success: false, message: "Phone number already in use" });
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
     if (!user.otpExpires || user.otpExpires < Date.now()) {
       return res.status(400).json({ success: false, message: "OTP expired" });
     }
-    try {
-      await verifyOtp(phoneNumber, otp);
-    } catch (error) {
-      if (error.providerRejected) return res.status(400).json({ success: false, message: "Invalid OTP" });
-      return res.status(502).json({ success: false, message: "Could not verify OTP." });
+    if (
+      user.otpPurpose !== "phone-change" ||
+      user.otpPhoneNumber !== normalized ||
+      !verifyOtp(otp, user.otp)
+    ) {
+      return res.status(400).json({ success: false, message: "Invalid OTP" });
     }
-    user.PhoneNumber = phoneNumber;
+    user.PhoneNumber = normalized;
     user.otp = null;
+    user.otpPurpose = null;
+    user.otpPhoneNumber = null;
     user.otpExpires = null;
     await user.save();
     // update messages from/to? risky; skip but note
@@ -236,8 +245,8 @@ router.post("/me/delete/request-otp", auth, otpLimiter, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) return res.status(404).json({ success: false, message: "User not found" });
-    const target = req.body?.phoneNumber || user.PhoneNumber;
-    if (String(target) !== String(user.PhoneNumber)) {
+    const target = normalizePhoneNumber(req.body?.phoneNumber || user.PhoneNumber);
+    if (!target || target !== user.PhoneNumber) {
       return res.status(400).json({ success: false, message: "OTP can only be sent to your account number" });
     }
     const now = Date.now();
@@ -245,12 +254,19 @@ router.post("/me/delete/request-otp", auth, otpLimiter, async (req, res) => {
       const waitSeconds = Math.ceil((60 * 1000 - (now - new Date(user.lastOtpSent).getTime())) / 1000);
       return res.status(429).json({ success: false, message: `Please wait ${waitSeconds}s before requesting another OTP.` });
     }
+    if (!(await User.reserveOtpRequest(user._id))) {
+      return res.status(429).json({ success: false, message: "You can request a maximum of 3 OTPs per day." });
+    }
+    const otp = generateOtp();
     try {
-      await sendSmsOtp(target);
+      await sendSmsOtp(target, otp);
     } catch (error) {
+      console.error("Delete request SMS OTP failed:", error.message);
       return res.status(502).json({ success: false, message: "Could not send verification SMS." });
     }
-    user.otp = null;
+    user.otp = otp;
+    user.otpPurpose = "account-delete";
+    user.otpPhoneNumber = target;
     user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
     user.lastOtpSent = new Date();
     await user.save();
@@ -270,17 +286,19 @@ router.delete("/me", auth, deleteLimiter, async (req, res) => {
 
     let verified = false;
     if (otp) {
-      const target = phoneNumber || user.PhoneNumber;
+      const target = normalizePhoneNumber(phoneNumber || user.PhoneNumber);
       if (!user.otpExpires || user.otpExpires < Date.now()) {
         return res.status(400).json({ success: false, message: "OTP expired or not requested" });
       }
-      try {
-        await verifyOtp(target, otp);
-        verified = true;
-      } catch (e) {
-        if (e.providerRejected) return res.status(400).json({ success: false, message: "Invalid OTP" });
-        return res.status(502).json({ success: false, message: "Could not verify OTP." });
+      if (
+        target !== user.PhoneNumber ||
+        user.otpPurpose !== "account-delete" ||
+        user.otpPhoneNumber !== target ||
+        !verifyOtp(otp, user.otp)
+      ) {
+        return res.status(400).json({ success: false, message: "Invalid OTP" });
       }
+      verified = true;
     } else if (password) {
       verified = await bcrypt.compare(password, user.password);
       if (!verified) return res.status(400).json({ success: false, message: "Incorrect password" });

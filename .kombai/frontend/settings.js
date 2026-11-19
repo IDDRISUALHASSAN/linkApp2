@@ -1,5 +1,22 @@
 ﻿import { API_URL, apiRequest, getAuthHeaders } from "./api";
 
+export function getOtpRequestErrorAlert(error, fallbackMessage) {
+  if (error?.status === 429) {
+    const dailyLimitReached = /maximum of 3 OTPs per day/i.test(error.message || "");
+    return {
+      title: dailyLimitReached ? "Daily OTP limit reached" : "Please wait",
+      message: dailyLimitReached
+        ? "You've reached today's limit of 3 OTP requests. Please try again tomorrow."
+        : error.message || "Too many OTP requests. Please wait before trying again.",
+    };
+  }
+
+  return {
+    title: "Error",
+    message: error?.message || fallbackMessage,
+  };
+}
+
 export async function getSettings() {
   return apiRequest("/me/settings");
 }

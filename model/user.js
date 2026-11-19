@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const DAILY_OTP_REQUEST_LIMIT = 3;
 
 const userSchema = new mongoose.Schema(
   {
@@ -10,6 +11,10 @@ const userSchema = new mongoose.Schema(
     otp: { type: String },
     otpExpires: { type: Date },
     lastOtpSent: { type: Date },
+    otpPurpose: { type: String },
+    otpPhoneNumber: { type: String },
+    otpRequestDay: { type: String, default: null },
+    otpRequestCount: { type: Number, default: 0, min: 0 },
     isVerified: { type: Boolean, default: false },
     online: { type: Boolean, default: false },
     lastSeen: { type: Date, default: null },
@@ -50,5 +55,24 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+userSchema.statics.reserveOtpRequest = async function (userId, now = new Date()) {
+  const today = now.toISOString().slice(0, 10);
+  const reset = await this.updateOne(
+    { _id: userId, otpRequestDay: { $ne: today } },
+    { $set: { otpRequestDay: today, otpRequestCount: 1 } },
+  );
+  if (reset.modifiedCount === 1) return true;
+
+  const increment = await this.updateOne(
+    {
+      _id: userId,
+      otpRequestDay: today,
+      otpRequestCount: { $lt: DAILY_OTP_REQUEST_LIMIT },
+    },
+    { $inc: { otpRequestCount: 1 } },
+  );
+  return increment.modifiedCount === 1;
+};
 
 module.exports = mongoose.model("User", userSchema);

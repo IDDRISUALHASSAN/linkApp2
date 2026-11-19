@@ -23,6 +23,7 @@ const {
 const Message = require("./model/message");
 const User = require("./model/user");
 const { sendExpoNotification } = require("./notificationHelper");
+const { normalizePhoneNumber } = require("./services/mnotifyOtp");
 
 const app = express();
 
@@ -121,7 +122,8 @@ io.on("connection", (socket) => {
 
   socket.on("login", async (phoneNumber) => {
     if (typeof phoneNumber !== "string" || !phoneNumber.trim()) return;
-    phoneNumber = phoneNumber.trim();
+    phoneNumber = normalizePhoneNumber(phoneNumber.trim());
+    if (!phoneNumber) return;
 
     const previousPhone = socketUsers.get(socket.id);
     if (previousPhone && previousPhone !== phoneNumber) {
@@ -186,6 +188,10 @@ io.on("connection", (socket) => {
   socket.on("message", async ({ from, to, text }) => {
     console.log("Incoming message:", { from, to });
     if (!from || !to || !text?.trim()) return;
+
+    from = normalizePhoneNumber(from);
+    to = normalizePhoneNumber(to);
+    if (!from || !to) return;
 
     try {
       const [sender, receiver] = await Promise.all([
@@ -416,10 +422,11 @@ io.on("connection", (socket) => {
     const key = userIdOrPhone.trim();
     socket.join(`inquiry:${key}`);
     try {
+      const normalizedPhone = normalizePhoneNumber(key);
       const user = await User.findOne({
         $or: [
           { _id: mongoose.isValidObjectId(key) ? key : null },
-          { PhoneNumber: key },
+          ...(normalizedPhone ? [{ PhoneNumber: normalizedPhone }] : []),
         ],
       }).select("_id PhoneNumber");
       if (user) {

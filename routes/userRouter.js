@@ -1,7 +1,6 @@
 ﻿const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const twilio = require("twilio");
 const User = require("../model/user");
 const Message = require("../model/message");
 const fs = require("fs");
@@ -10,27 +9,40 @@ const multer = require("multer");
 const cloudinary = require("./../cloudinary");
 const rateLimit = require("../middleware/rateLimit");
 const {
+  generateOtp,
   sendSmsOtp,
   verifyOtp,
-  normalizeArkeselNumber,
-} = require("../services/arkeselOtp");
+  normalizePhoneNumber,
+} = require("../services/mnotifyOtp");
 const message = require("../model/message");
 const { time } = require("console");
 const { sendExpoNotification, Expo } = require("../notificationHelper");
 
 let pendingUsers = {};
 const router = express.Router();
-const client = twilio(process.env.TWILIO_SID, process.env.TWILIO_AUTH);
+const signupOtpLimiter = rateLimit(60 * 1000, 5);
+const passwordResetOtpLimiter = rateLimit(60 * 1000, 3);
+const passwordResetVerifyLimiter = rateLimit(60 * 1000, 5);
 
 const sendSignupOtp = async (user) => {
-  const providerResponse = await sendSmsOtp(user.PhoneNumber);
+  const allowed = await User.reserveOtpRequest(user._id);
+  if (!allowed) {
+    const error = new Error("You can request a maximum of 3 OTPs per day.");
+    error.statusCode = 429;
+    throw error;
+  }
 
-  user.otp = null;
+  const otp = generateOtp();
+  const providerResponse = await sendSmsOtp(user.PhoneNumber, otp);
+
+  user.otp = otp;
+  user.otpPurpose = "signup";
+  user.otpPhoneNumber = user.PhoneNumber;
   user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
   user.lastOtpSent = new Date();
   await user.save();
 
-  console.info("Arkesel accepted signup OTP request:", {
+  console.info("mNotify accepted signup OTP request:", {
     code: providerResponse.code,
     message: providerResponse.message,
   });
@@ -79,7 +91,7 @@ const authMiddleware = async (req, res, next) => {
 // ðŸ”¹ Signup â†’ create user in DB with OTP
 router.post("/signup", async (req, res) => {
   try {
-    const {name, PhoneNumber, password } = req.body;
+    const { name, PhoneNumber, password } = req.body;
 
     if (!name || !PhoneNumber || !password) {
       return res.status(400).json({
@@ -88,13 +100,16 @@ router.post("/signup", async (req, res) => {
       });
     }
 
-    try {
-      normalizeArkeselNumber(PhoneNumber);
-    } catch (error) {
-      return res.status(400).json({ success: false, message: error.message });
+    const normalizedPhone = normalizePhoneNumber(PhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format. Use international format (e.g., +233XXXXXXXXX)",
+      });
     }
 
-    const existing = await User.findOne({ PhoneNumber });
+    // Check if user already exists (with normalized phone)
+    const existing = await User.findOne({ PhoneNumber: normalizedPhone });
 
     if (existing) {
       if (existing.isVerified) {
@@ -120,6 +135,14 @@ router.post("/signup", async (req, res) => {
       try {
         await sendSignupOtp(existing);
       } catch (error) {
+        if (error.statusCode === 429) {
+          return res.status(429).json({
+            success: false,
+            message: error.message,
+            userId: existing._id,
+            pendingVerification: true,
+          });
+        }
         console.error("Signup SMS OTP failed:", error.message);
         return res.status(502).json({
           success: false,
@@ -132,7 +155,7 @@ router.post("/signup", async (req, res) => {
       return res.json({
         success: true,
         message:
-          "Arkesel accepted the OTP request; delivery to your phone is still pending.",
+          "mNotify accepted the OTP request; delivery to your phone is still pending.",
         userId: existing._id,
         pendingVerification: true,
         deliveryStatus: "processing",
@@ -143,7 +166,7 @@ router.post("/signup", async (req, res) => {
 
     const newUser = new User({
       name,
-      PhoneNumber,
+      PhoneNumber: normalizedPhone,
       password: hashedPassword,
       isVerified: false,
     });
@@ -153,11 +176,19 @@ router.post("/signup", async (req, res) => {
     try {
       await sendSignupOtp(newUser);
     } catch (error) {
+      if (error.statusCode === 429) {
+        return res.status(429).json({
+          success: false,
+          message: error.message,
+          userId: newUser._id,
+          pendingVerification: true,
+        });
+      }
       console.error("Signup SMS OTP failed:", error.message);
       return res.status(502).json({
         success: false,
         message:
-          "Account created, but Arkesel could not accept the verification SMS request. Please retry signup or use resend OTP.",
+          "Account created, but mNotify could not accept the verification SMS request. Please retry signup or use resend OTP.",
         userId: newUser._id,
         pendingVerification: true,
       });
@@ -166,7 +197,7 @@ router.post("/signup", async (req, res) => {
     res.json({
       success: true,
       message:
-        "Arkesel accepted the OTP request; delivery to your phone is still pending.",
+        "mNotify accepted the OTP request; delivery to your phone is still pending.",
       userId: newUser._id,
       deliveryStatus: "processing",
     });
@@ -175,7 +206,7 @@ router.post("/signup", async (req, res) => {
   }
 });
 
-router.post("/verify", async (req, res) => {
+router.post("/verify", signupOtpLimiter, async (req, res) => {
   try {
     const { userId, otp } = req.body;
     if (!userId || !otp) {
@@ -194,29 +225,18 @@ router.post("/verify", async (req, res) => {
       return res.status(400).json({ success: false, message: "OTP expired" });
     }
 
-    if (user.otp) {
-      if (String(user.otp).trim() !== String(otp).trim()) {
-        return res.status(400).json({ success: false, message: "Invalid OTP" });
-      }
-    } else {
-      try {
-        await verifyOtp(user.PhoneNumber, otp);
-      } catch (error) {
-        console.error("Signup OTP verification failed:", error.message);
-        if (error.providerRejected) {
-          return res
-            .status(400)
-            .json({ success: false, message: "Invalid OTP" });
-        }
-        return res.status(502).json({
-          success: false,
-          message: "Could not verify the code with Arkesel. Please try again.",
-        });
-      }
+    if (
+      user.otpPurpose !== "signup" ||
+      user.otpPhoneNumber !== user.PhoneNumber ||
+      !verifyOtp(otp, user.otp)
+    ) {
+      return res.status(400).json({ success: false, message: "Invalid OTP" });
     }
 
     user.isVerified = true;
     user.otp = null;
+    user.otpPurpose = null;
+    user.otpPhoneNumber = null;
     user.otpExpires = null;
     await user.save();
     res.json({ success: true, message: "Account verified, you can login now" });
@@ -237,8 +257,16 @@ router.post("/resend-otp", async (req, res) => {
       });
     }
 
+    const normalizedPhone = normalizePhoneNumber(PhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format",
+      });
+    }
+
     // Find user by phone
-    const user = await User.findOne({ PhoneNumber });
+    const user = await User.findOne({ PhoneNumber: normalizedPhone });
     if (!user) {
       return res
         .status(404)
@@ -266,6 +294,9 @@ router.post("/resend-otp", async (req, res) => {
     try {
       await sendSignupOtp(user);
     } catch (error) {
+      if (error.statusCode === 429) {
+        return res.status(429).json({ success: false, message: error.message });
+      }
       console.error("Resend SMS OTP failed:", error.message);
       return res.status(502).json({
         success: false,
@@ -276,7 +307,7 @@ router.post("/resend-otp", async (req, res) => {
     res.json({
       success: true,
       message:
-        "Arkesel accepted the OTP request; delivery to your phone is still pending.",
+        "mNotify accepted the OTP request; delivery to your phone is still pending.",
       deliveryStatus: "processing",
     });
   } catch (err) {
@@ -299,7 +330,14 @@ router.post("/login", async (req, res) => {
         message: "Phone number and password required",
       });
     }
-    const user = await User.findOne({ PhoneNumber });
+    const normalizedPhone = normalizePhoneNumber(PhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format",
+      });
+    }
+    const user = await User.findOne({ PhoneNumber: normalizedPhone });
     if (!user)
       return res
         .status(404)
@@ -346,8 +384,8 @@ router.post("/change-password", authMiddleware, async (req, res) => {
   }
 });
 
-/// Request password reset via WhatsApp OTP
-router.post("/resetpassword", async (req, res) => {
+// Request password reset via SMS OTP
+router.post("/resetpassword", passwordResetOtpLimiter, async (req, res) => {
   try {
     const { PhoneNumber } = req.body;
 
@@ -358,7 +396,15 @@ router.post("/resetpassword", async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ PhoneNumber });
+    const normalizedPhone = normalizePhoneNumber(PhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format",
+      });
+    }
+
+    const user = await User.findOne({ PhoneNumber: normalizedPhone });
 
     if (!user) {
       return res.status(404).json({
@@ -367,26 +413,45 @@ router.post("/resetpassword", async (req, res) => {
       });
     }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const now = Date.now();
+    if (user.lastOtpSent && now - new Date(user.lastOtpSent).getTime() < 60 * 1000) {
+      const waitSeconds = Math.ceil(
+        (60 * 1000 - (now - new Date(user.lastOtpSent).getTime())) / 1000,
+      );
+      return res.status(429).json({
+        success: false,
+        message: `Please wait ${waitSeconds}s before requesting another OTP.`,
+      });
+    }
 
-    // Save OTP and expiration
+    if (!(await User.reserveOtpRequest(user._id))) {
+      return res.status(429).json({
+        success: false,
+        message: "You can request a maximum of 3 OTPs per day.",
+      });
+    }
+
+    const otp = generateOtp();
+    try {
+      await sendSmsOtp(user.PhoneNumber, otp);
+    } catch (error) {
+      console.error("Password reset SMS OTP failed:", error.message);
+      return res.status(502).json({
+        success: false,
+        message: "Could not send the password reset SMS. Please try again.",
+      });
+    }
+
     user.otp = otp;
-    user.otpExpires = Date.now() + 5 * 60 * 1000; // 5 minutes
+    user.otpPurpose = "password-reset";
+    user.otpPhoneNumber = user.PhoneNumber;
+    user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+    user.lastOtpSent = new Date();
     await user.save();
-
-    //  Send OTP via WhatsApp using Twilio
-    const message = await client.messages.create({
-      from: "whatsapp:+14155238886",
-      to: `whatsapp:${PhoneNumber}`,
-      body: `Your LinkApp password reset code is: ${otp}. It expires in 5 minutes.`,
-    });
-
-    console.log("WhatsApp OTP sent:", message.sid);
 
     res.json({
       success: true,
-      message: "OTP sent successfully via WhatsApp.",
+      message: "Password reset OTP sent by SMS.",
     });
   } catch (err) {
     console.error("Reset Password Error:", err);
@@ -398,7 +463,7 @@ router.post("/resetpassword", async (req, res) => {
 });
 
 // Verify OTP and reset password
-router.post("/verify-reset-otp", async (req, res) => {
+router.post("/verify-reset-otp", passwordResetVerifyLimiter, async (req, res) => {
   try {
     const { PhoneNumber, otp, newPassword } = req.body;
 
@@ -409,7 +474,15 @@ router.post("/verify-reset-otp", async (req, res) => {
       });
     }
 
-    const user = await User.findOne({ PhoneNumber });
+    const normalizedPhone = normalizePhoneNumber(PhoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format",
+      });
+    }
+
+    const user = await User.findOne({ PhoneNumber: normalizedPhone });
     if (!user) {
       return res.status(404).json({
         success: false,
@@ -418,7 +491,13 @@ router.post("/verify-reset-otp", async (req, res) => {
     }
 
     // Check if OTP matches and not expired
-    if (user.otp !== otp || user.otpExpires < Date.now()) {
+    if (
+      user.otpPurpose !== "password-reset" ||
+      user.otpPhoneNumber !== normalizedPhone ||
+      !user.otpExpires ||
+      user.otpExpires < Date.now() ||
+      !verifyOtp(otp, user.otp)
+    ) {
       return res.status(400).json({
         success: false,
         message: "Invalid or expired OTP",
@@ -426,11 +505,12 @@ router.post("/verify-reset-otp", async (req, res) => {
     }
 
     // Hash and save new password
-    const bcrypt = require("bcrypt");
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     user.password = hashedPassword;
     user.otp = null;
+    user.otpPurpose = null;
+    user.otpPhoneNumber = null;
     user.otpExpires = null;
 
     await user.save();
@@ -975,7 +1055,7 @@ router.get(
 //  Fetch only registered contacts
 router.post("/users", async (req, res) => {
   try {
-    const { phoneNumbers, countryCode } = req.body;
+const { phoneNumbers, countryCode } = req.body;
 
     if (!phoneNumbers || !Array.isArray(phoneNumbers)) {
       return res
@@ -983,10 +1063,15 @@ router.post("/users", async (req, res) => {
         .json({ success: false, message: "Invalid contacts list" });
     }
 
-    // Remove duplicates and invalid entries
-    const cleanedNumbers = [...new Set(phoneNumbers.filter(Boolean))];
+    // Normalize all phone numbers to E.164 format for consistent matching
+    const normalizedNumbers = phoneNumbers
+      .map((num) => normalizePhoneNumber(num, countryCode))
+      .filter(Boolean);
 
-    console.log("ðŸ“¨ Received from frontend:", cleanedNumbers);
+    // Remove duplicates
+    const cleanedNumbers = [...new Set(normalizedNumbers)];
+
+    console.log("📥 Received from frontend:", cleanedNumbers);
 
     //  Match the exact DB field: PhoneNumber (with uppercase P)
     let requester = null;
@@ -1072,6 +1157,14 @@ router.post("/save-token", async (req, res) => {
       });
     }
 
+    const normalizedPhone = normalizePhoneNumber(phoneNumber);
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid phone number format",
+      });
+    }
+
     const normalizedToken = expoPushToken.trim();
     if (!Expo.isExpoPushToken(normalizedToken)) {
       return res
@@ -1079,14 +1172,14 @@ router.post("/save-token", async (req, res) => {
         .json({ success: false, message: "Invalid Expo push token" });
     }
 
-    const user = await User.findOne({ PhoneNumber: phoneNumber });
+    const user = await User.findOne({ PhoneNumber: normalizedPhone });
     if (!user) {
-      console.warn(`[Token] No user found for PhoneNumber: ${phoneNumber}`);
+      console.warn(`[Token] No user found for PhoneNumber: ${normalizedPhone}`);
       return res.status(404).json({ success: false, message: "User not found" });
     }
 
     await User.updateOne(
-      { PhoneNumber: phoneNumber },
+      { PhoneNumber: normalizedPhone },
       {
         $set: { expoPushToken: normalizedToken },
         $addToSet: { expoPushTokens: normalizedToken },
