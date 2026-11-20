@@ -1,14 +1,14 @@
-# fly.toml app configuration file generated for linkapp2 on 2026-11-13T13:59:10Z
+# fly.toml app configuration file generated for linkapp2-dqi5q on 2026-11-20T16:40:39Z
 #
 # See https://docs.fly.io/reference/configuration for information about how to use this file.
 #
 
-app = 'linkapp2'
+app = 'linkapp2-dqi5q'
 primary_region = 'ams'
 
 [build]
 [http_service]
-  internal_port = 8080
+  internal_port = 3000
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
